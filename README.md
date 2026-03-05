@@ -104,6 +104,10 @@ SQLite tables:
 
 Each table stores essential normalized fields and raw JSON payloads (`*_json`) for future reprocessing.
 
+## License
+
+This project is licensed under the MIT License. See [LICENSE](./LICENSE).
+
 ## Notes
 
 - Respect target site rules and terms before large-scale crawling.
