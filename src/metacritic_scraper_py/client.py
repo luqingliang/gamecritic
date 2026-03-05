@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import logging
+import time
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import Iterator, Literal
+from urllib.parse import urlparse
+
+import httpx
+
+from .config import (
+    BASE_API_URL,
+    BASE_SITE_URL,
+    DEFAULT_BACKOFF_SECONDS,
+    DEFAULT_DELAY_SECONDS,
+    DEFAULT_HEADERS,
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT_SECONDS,
+)
+
+logger = logging.getLogger(__name__)
+
+RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+SITEMAP_NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+ReviewType = Literal["critic", "user"]
+
+
+class MetacriticClientError(RuntimeError):
+    """Raised when API calls fail."""
+
+
+@dataclass(frozen=True)
+class ReviewPage:
+    items: list[dict]
+    next_href: str | None
+    total_results: int
+
+
+def slug_from_game_url(url: str) -> str | None:
+    """
+    Extract slug from URLs like:
+    https://www.metacritic.com/game/the-legend-of-zelda-breath-of-the-wild/
+    """
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    if parts[0] != "game":
+        return None
+    return parts[1]
+
+
+class MetacriticClient:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
+        delay_seconds: float = DEFAULT_DELAY_SECONDS,
+        user_agent: str | None = None,
+    ) -> None:
+        headers = dict(DEFAULT_HEADERS)
+        if user_agent:
+            headers["User-Agent"] = user_agent
+        self.max_retries = max_retries
+        self.backoff_seconds = backoff_seconds
+        self.delay_seconds = delay_seconds
+        self._http = httpx.Client(
+            headers=headers,
+            timeout=timeout_seconds,
+            follow_redirects=True,
+            http2=False,
+        )
+
+    def __enter__(self) -> "MetacriticClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._http.close()
+
+    def _sleep(self) -> None:
+        if self.delay_seconds > 0:
+            time.sleep(self.delay_seconds)
+
+    def _request(self, url: str, *, params: dict | None = None) -> httpx.Response:
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                self._sleep()
+                response = self._http.get(url, params=params)
+                if response.status_code in RETRY_STATUS_CODES:
+                    raise MetacriticClientError(
+                        f"retryable status code {response.status_code} for {response.url}"
+                    )
+                if response.status_code >= 400:
+                    raise MetacriticClientError(
+                        f"status code {response.status_code} for {response.url}"
+                    )
+                return response
+            except (httpx.TransportError, httpx.TimeoutException, MetacriticClientError) as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                wait_seconds = self.backoff_seconds * attempt
+                logger.warning(
+                    "request failed (%s), retrying in %.1fs (%d/%d)",
+                    exc,
+                    wait_seconds,
+                    attempt,
+                    self.max_retries,
+                )
+                time.sleep(wait_seconds)
+        raise MetacriticClientError(f"request failed after retries: {last_error}")
+
+    def _get_text(self, url: str) -> str:
+        response = self._request(url)
+        return response.text
+
+    def _get_json(self, url: str, *, params: dict | None = None) -> dict:
+        response = self._request(url, params=params)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise MetacriticClientError(f"invalid json from {response.url}") from exc
+
+    def get_robots_txt(self) -> str:
+        return self._get_text(f"{BASE_SITE_URL}/robots.txt")
+
+    def iter_game_sitemap_urls(self, *, limit_sitemaps: int | None = None) -> Iterator[str]:
+        xml_text = self._get_text(f"{BASE_SITE_URL}/games.xml")
+        root = ET.fromstring(xml_text)
+        count = 0
+        for node in root.findall(".//sm:sitemap/sm:loc", SITEMAP_NS):
+            if not node.text:
+                continue
+            yield node.text.strip()
+            count += 1
+            if limit_sitemaps and count >= limit_sitemaps:
+                break
+
+    def iter_game_slugs(
+        self,
+        *,
+        limit_sitemaps: int | None = None,
+        limit_slugs: int | None = None,
+    ) -> Iterator[str]:
+        yielded = 0
+        for sitemap_url in self.iter_game_sitemap_urls(limit_sitemaps=limit_sitemaps):
+            xml_text = self._get_text(sitemap_url)
+            root = ET.fromstring(xml_text)
+            for node in root.findall(".//sm:url/sm:loc", SITEMAP_NS):
+                if not node.text:
+                    continue
+                slug = slug_from_game_url(node.text.strip())
+                if not slug:
+                    continue
+                yield slug
+                yielded += 1
+                if limit_slugs and yielded >= limit_slugs:
+                    return
+
+    def fetch_product(self, slug: str) -> dict:
+        url = f"{BASE_API_URL}/games/metacritic/{slug}/web"
+        params = {
+            "componentName": "product",
+            "componentDisplayName": "Product",
+            "componentType": "Product",
+        }
+        return self._get_json(url, params=params)
+
+    def fetch_score_summary(self, slug: str, review_type: ReviewType) -> dict:
+        if review_type == "critic":
+            component_name = "critic-score-summary"
+            display_name = "Critic Score Summary"
+        else:
+            component_name = "user-score-summary"
+            display_name = "User Score Summary"
+        url = f"{BASE_API_URL}/reviews/metacritic/{review_type}/games/{slug}/stats/web"
+        params = {
+            "componentName": component_name,
+            "componentDisplayName": display_name,
+            "componentType": "MetaScoreSummary",
+        }
+        return self._get_json(url, params=params)
+
+    def fetch_reviews_page(
+        self,
+        *,
+        slug: str,
+        review_type: ReviewType,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> ReviewPage:
+        url = f"{BASE_API_URL}/reviews/metacritic/{review_type}/games/{slug}/web"
+        if review_type == "critic":
+            params = {
+                "offset": offset,
+                "limit": limit,
+                "sort": "date",
+                "componentName": "latest-critic-reviews",
+                "componentDisplayName": "Latest Critic Reviews",
+                "componentType": "ReviewList",
+            }
+        else:
+            params = {
+                "offset": offset,
+                "limit": limit,
+                "orderBy": "score",
+                "orderType": "desc",
+                "sort": "date",
+                "componentName": "top-user-reviews",
+                "componentDisplayName": "Top User Reviews",
+                "componentType": "ReviewList",
+            }
+        payload = self._get_json(url, params=params)
+        items = payload.get("data", {}).get("items", [])
+        total_results = int(payload.get("data", {}).get("totalResults", 0))
+        next_href = payload.get("links", {}).get("next", {}).get("href")
+        return ReviewPage(items=list(items), next_href=next_href, total_results=total_results)
+
+    def iter_reviews(
+        self,
+        *,
+        slug: str,
+        review_type: ReviewType,
+        page_size: int = 50,
+        max_pages: int | None = None,
+    ) -> Iterator[dict]:
+        offset = 0
+        page_num = 0
+        while True:
+            if max_pages is not None and page_num >= max_pages:
+                return
+            page = self.fetch_reviews_page(
+                slug=slug,
+                review_type=review_type,
+                offset=offset,
+                limit=page_size,
+            )
+            if not page.items:
+                return
+            for item in page.items:
+                yield item
+            page_num += 1
+            if not page.next_href:
+                return
+            offset += len(page.items)
+
+    def fetch_finder_page(
+        self,
+        *,
+        sort_by: str = "-releaseDate",
+        offset: int = 0,
+        limit: int = 24,
+        mco_type_id: int = 13,
+        platform_ids: list[int] | None = None,
+        genres: list[str] | None = None,
+    ) -> dict:
+        params: dict[str, str | int] = {
+            "mcoTypeId": mco_type_id,
+            "sortBy": sort_by,
+            "offset": offset,
+            "limit": limit,
+            "componentName": "finder-list",
+            "componentDisplayName": "Finder List",
+            "componentType": "ProductList",
+        }
+        if platform_ids:
+            params["platform"] = ",".join(str(v) for v in platform_ids)
+        if genres:
+            params["genres"] = ",".join(genres)
+        return self._get_json(f"{BASE_API_URL}/finder/metacritic/web", params=params)
