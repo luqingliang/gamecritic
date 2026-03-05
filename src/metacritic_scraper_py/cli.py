@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shlex
 from datetime import date
 from pathlib import Path
 from typing import Sequence
@@ -25,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logs.")
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     crawl = subparsers.add_parser("crawl", help="Crawl games from games sitemap.")
     crawl.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
@@ -113,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-raw-json",
         action="store_true",
         help="Include raw JSON columns in Excel sheets.",
+    )
+
+    subparsers.add_parser(
+        "interactive",
+        help="Run interactive shell (persistent session).",
     )
 
     return parser
@@ -247,11 +253,232 @@ def run_export_excel(args: argparse.Namespace) -> int:
     return 0
 
 
+def _interactive_defaults() -> dict[str, object]:
+    return {
+        "db": "data/metacritic.db",
+        "max_games": None,
+        "start_slug": None,
+        "limit_sitemaps": None,
+        "limit_slugs": None,
+        "include_reviews": False,
+        "review_page_size": 50,
+        "max_review_pages": None,
+        "concurrency": 1,
+        "incremental_by_date": False,
+        "since_date": None,
+        "lookback_days": 3,
+        "finder_page_size": 24,
+        "incremental_state_key": "games_incremental_release_date",
+        "timeout": DEFAULT_TIMEOUT_SECONDS,
+        "max_retries": DEFAULT_MAX_RETRIES,
+        "backoff": DEFAULT_BACKOFF_SECONDS,
+        "delay": DEFAULT_DELAY_SECONDS,
+        "export_output": "data/metacritic_export.xlsx",
+        "slug_filter": None,
+        "include_raw_json": False,
+    }
+
+
+def _parse_bool(raw: str) -> bool:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError("expected boolean value (true/false)")
+
+
+def _convert_setting_value(key: str, raw_value: str) -> object:
+    bool_keys = {"include_reviews", "incremental_by_date", "include_raw_json"}
+    int_keys = {
+        "review_page_size",
+        "concurrency",
+        "lookback_days",
+        "finder_page_size",
+        "max_retries",
+    }
+    float_keys = {"timeout", "backoff", "delay"}
+    optional_int_keys = {"max_games", "max_review_pages", "limit_sitemaps", "limit_slugs"}
+    optional_str_keys = {"start_slug", "since_date", "slug_filter"}
+
+    value = raw_value.strip()
+    if key in bool_keys:
+        return _parse_bool(value)
+    if key in int_keys:
+        return int(value)
+    if key in float_keys:
+        return float(value)
+    if key in optional_int_keys:
+        return None if value.lower() in {"none", "null", ""} else int(value)
+    if key in optional_str_keys:
+        return None if value.lower() in {"none", "null", ""} else value
+    if key in {"db", "incremental_state_key", "export_output"}:
+        return value
+    raise KeyError(f"unknown setting key: {key}")
+
+
+def _print_interactive_help() -> None:
+    print(
+        "\n".join(
+            [
+                "Interactive commands:",
+                "  help                              Show help",
+                "  show                              Show current session settings",
+                "  set <key> <value>                 Update setting (use 'none' for null)",
+                "  reset                             Reset settings to defaults",
+                "  crawl                             Run crawl with current settings",
+                "  crawl-one <slug>                  Crawl one game with current settings",
+                "  slugs [output_path]               Print slugs or save to a file",
+                "  export-excel [output_path]        Export DB data to Excel",
+                "  exit | quit                       Exit interactive shell",
+                "",
+                "Examples:",
+                "  set db data/metacritic.db",
+                "  set include_reviews true",
+                "  set concurrency 4",
+                "  set incremental_by_date true",
+                "  crawl",
+                "  crawl-one the-legend-of-zelda-breath-of-the-wild",
+            ]
+        )
+    )
+
+
+def run_interactive() -> int:
+    settings = _interactive_defaults()
+    print("Metacritic Scraper Interactive Shell")
+    print("Type 'help' to see commands.")
+    while True:
+        try:
+            line = input("metacritic> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+
+        try:
+            tokens = shlex.split(line)
+        except ValueError as exc:
+            print(f"Invalid input: {exc}")
+            continue
+
+        cmd = tokens[0].lower()
+        args = tokens[1:]
+
+        if cmd in {"exit", "quit"}:
+            return 0
+        if cmd in {"help", "h", "?"}:
+            _print_interactive_help()
+            continue
+        if cmd in {"show", "config"}:
+            for key in sorted(settings):
+                print(f"{key}={settings[key]}")
+            continue
+        if cmd == "reset":
+            settings = _interactive_defaults()
+            print("Settings reset.")
+            continue
+        if cmd == "set":
+            if len(args) < 2:
+                print("Usage: set <key> <value>")
+                continue
+            key = args[0]
+            raw_value = " ".join(args[1:])
+            try:
+                value = _convert_setting_value(key, raw_value)
+                if key == "since_date" and value is not None:
+                    date.fromisoformat(str(value))
+                if key == "concurrency" and int(value) < 1:
+                    raise ValueError("concurrency must be >= 1")
+            except (KeyError, ValueError) as exc:
+                print(f"Cannot set value: {exc}")
+                continue
+            settings[key] = value
+            print(f"Updated: {key}={value}")
+            continue
+
+        try:
+            if cmd == "crawl":
+                ns = argparse.Namespace(
+                    db=settings["db"],
+                    max_games=settings["max_games"],
+                    start_slug=settings["start_slug"],
+                    limit_sitemaps=settings["limit_sitemaps"],
+                    limit_slugs=settings["limit_slugs"],
+                    include_reviews=settings["include_reviews"],
+                    review_page_size=settings["review_page_size"],
+                    max_review_pages=settings["max_review_pages"],
+                    concurrency=settings["concurrency"],
+                    incremental_by_date=settings["incremental_by_date"],
+                    since_date=settings["since_date"],
+                    lookback_days=settings["lookback_days"],
+                    finder_page_size=settings["finder_page_size"],
+                    incremental_state_key=settings["incremental_state_key"],
+                    timeout=settings["timeout"],
+                    max_retries=settings["max_retries"],
+                    backoff=settings["backoff"],
+                    delay=settings["delay"],
+                )
+                run_crawl(ns)
+                continue
+
+            if cmd == "crawl-one":
+                slug = args[0] if args else input("slug> ").strip()
+                if not slug:
+                    print("slug is required")
+                    continue
+                ns = argparse.Namespace(
+                    slug=slug,
+                    db=settings["db"],
+                    include_reviews=settings["include_reviews"],
+                    review_page_size=settings["review_page_size"],
+                    max_review_pages=settings["max_review_pages"],
+                    timeout=settings["timeout"],
+                    max_retries=settings["max_retries"],
+                    backoff=settings["backoff"],
+                    delay=settings["delay"],
+                )
+                run_crawl_one(ns)
+                continue
+
+            if cmd == "slugs":
+                output = args[0] if args else None
+                ns = argparse.Namespace(
+                    limit_sitemaps=settings["limit_sitemaps"],
+                    limit_slugs=settings["limit_slugs"],
+                    output=output,
+                    timeout=settings["timeout"],
+                    max_retries=settings["max_retries"],
+                    backoff=settings["backoff"],
+                    delay=settings["delay"],
+                )
+                run_slugs(ns)
+                continue
+
+            if cmd == "export-excel":
+                output = args[0] if args else settings["export_output"]
+                ns = argparse.Namespace(
+                    db=settings["db"],
+                    output=output,
+                    slug=settings["slug_filter"],
+                    include_raw_json=settings["include_raw_json"],
+                )
+                run_export_excel(ns)
+                continue
+
+            print(f"Unknown command: {cmd}. Type 'help' for available commands.")
+        except Exception as exc:  # pragma: no cover
+            print(f"Command failed: {exc}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_logging(args.verbose)
 
+    if args.command is None or args.command == "interactive":
+        return run_interactive()
     if args.command == "crawl":
         return run_crawl(args)
     if args.command == "crawl-one":

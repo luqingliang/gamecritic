@@ -34,13 +34,32 @@ pip install -e .
 
 ## Quick Start
 
-1) Crawl one game:
+1) Start interactive shell (persistent session, like a REPL):
+
+```bash
+metacritic-scraper
+# or: metacritic-scraper interactive
+```
+
+Inside interactive shell:
+
+```text
+show
+set db data/metacritic.db
+set include_reviews true
+set concurrency 4
+crawl
+export-excel data/metacritic_export.xlsx
+exit
+```
+
+2) Crawl one game:
 
 ```bash
 metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild --db data/metacritic.db --include-reviews --max-review-pages 2
 ```
 
-2) Crawl from sitemap (example: first 50 games):
+3) Crawl from sitemap (example: first 50 games):
 
 ```bash
 metacritic-scraper crawl --max-games 50 --db data/metacritic.db --include-reviews --max-review-pages 1
@@ -52,25 +71,25 @@ Optional: enable concurrent workers (for example 4 workers).
 metacritic-scraper crawl --max-games 50 --concurrency 4 --db data/metacritic.db --include-reviews
 ```
 
-3) Crawl incrementally by release date (switch on):
+4) Crawl incrementally by release date (switch on):
 
 ```bash
 metacritic-scraper crawl --incremental-by-date --db data/metacritic.db --include-reviews --max-review-pages 1
 ```
 
-4) Crawl incrementally with explicit date override:
+5) Crawl incrementally with explicit date override:
 
 ```bash
 metacritic-scraper crawl --incremental-by-date --since-date 2026-03-01 --lookback-days 2 --db data/metacritic.db
 ```
 
-5) Export slugs from sitemap:
+6) Export slugs from sitemap:
 
 ```bash
 metacritic-scraper slugs --limit-slugs 100 --output data/slugs.txt
 ```
 
-6) Export SQLite data to Excel:
+7) Export SQLite data to Excel:
 
 ```bash
 metacritic-scraper export-excel --db data/metacritic.db --output data/metacritic_export.xlsx
@@ -90,6 +109,7 @@ metacritic-scraper crawl --help
 metacritic-scraper crawl-one --help
 metacritic-scraper slugs --help
 metacritic-scraper export-excel --help
+metacritic-scraper interactive --help
 ```
 
 ## Incremental Toggle
@@ -119,6 +139,7 @@ This project is licensed under the MIT License. See [LICENSE](./LICENSE).
 - [x] Game coverage: crawl game details, critic reviews, and user reviews
 - [x] Result inspection: export to Excel for manual QA checks
 - [x] Optional concurrent crawl: speed up batch crawling with `--concurrency`
+- [x] Interactive CLI mode: persistent shell with session-level settings
 - [ ] Domain expansion: add Movies crawling
 - [ ] Domain expansion: add TV Shows crawling
 - [ ] Domain expansion: add Music crawling
