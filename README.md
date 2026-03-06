@@ -149,6 +149,7 @@ SQLite tables:
 - `user_reviews`
 
 Each table stores essential normalized fields and raw JSON payloads (`*_json`) for future reprocessing.
+`games.cover_url` stores the cover image URL built from product `bucketPath` (`/a/img/catalog/...`).
 
 ## License
 
@@ -160,6 +161,8 @@ This project is licensed under the MIT License. See [LICENSE](./LICENSE).
 - [x] Result inspection: export to Excel for manual QA checks
 - [x] Optional concurrent crawl: speed up batch crawling with `--concurrency`
 - [x] Interactive CLI mode: persistent shell with session-level settings
+- [x] Cover metadata: persist `games.cover_url` from Product `bucketPath` (store URL only, no binary download)
+- [ ] Optional cover sync: add `--download-covers` to download cover files to local disk or object storage
 - [ ] Domain expansion: add Movies crawling
 - [ ] Domain expansion: add TV Shows crawling
 - [ ] Domain expansion: add Music crawling

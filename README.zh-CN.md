@@ -149,6 +149,7 @@ SQLite 表：
 - `user_reviews`
 
 每张表都保存关键规范化字段和原始 JSON（`*_json`），便于后续重放解析。
+其中 `games.cover_url` 用于保存封面图链接，直接由产品 `bucketPath` 组装为 catalog 原图地址（`/a/img/catalog/...`）。
 
 ## 许可证
 
@@ -160,6 +161,8 @@ SQLite 表：
 - [x] 数据核查能力：支持 Excel 导出，方便人工抽样检查
 - [x] 并发抓取（可选）：支持通过 `--concurrency` 提升批量抓取速度
 - [x] 交互模式 CLI：支持常驻运行与会话级配置
+- [x] 封面元数据：写入 `games.cover_url`（由 Product `bucketPath` 组装，仅保存链接，不下载图片实体）
+- [ ] 封面文件同步（可选）：计划增加 `--download-covers`，将封面图下载到本地或对象存储
 - [ ] 内容扩展：增加电影（Movies）数据抓取
 - [ ] 内容扩展：增加电视剧/节目（TV Shows）数据抓取
 - [ ] 内容扩展：增加音乐（Music）数据抓取

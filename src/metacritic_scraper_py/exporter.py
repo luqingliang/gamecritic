@@ -23,6 +23,11 @@ def _fetch_rows(conn: sqlite3.Connection, query: str, params: tuple[Any, ...]) -
     return rows
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    cursor = conn.execute(f"PRAGMA table_info({table_name})")
+    return {str(row[1]) for row in cursor.fetchall()}
+
+
 def _write_sheet(ws: Worksheet, rows: list[dict], columns: list[str]) -> int:
     ws.append(columns)
     header_fill = PatternFill(fill_type="solid", start_color="1F4E78", end_color="1F4E78")
@@ -76,6 +81,7 @@ def export_sqlite_to_excel(
         "critic_review_count",
         "user_score",
         "user_review_count",
+        "cover_url",
         "scraped_at",
     ]
     if include_raw_json:
@@ -112,6 +118,10 @@ def export_sqlite_to_excel(
     params: tuple[Any, ...] = (slug,) if slug else tuple()
 
     with sqlite3.connect(db_path) as conn:
+        games_columns = [col for col in games_columns if col in _table_columns(conn, "games")]
+        critic_columns = [col for col in critic_columns if col in _table_columns(conn, "critic_reviews")]
+        user_columns = [col for col in user_columns if col in _table_columns(conn, "user_reviews")]
+
         games_query = f"SELECT {', '.join(games_columns)} FROM games"
         critic_query = f"SELECT {', '.join(critic_columns)} FROM critic_reviews"
         user_query = f"SELECT {', '.join(user_columns)} FROM user_reviews"
@@ -157,4 +167,3 @@ def export_sqlite_to_excel(
 
     workbook.save(output_path)
     return counts
-

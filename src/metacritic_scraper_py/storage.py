@@ -73,6 +73,7 @@ class SQLiteStorage:
                     critic_review_count INTEGER,
                     user_score REAL,
                     user_review_count INTEGER,
+                    cover_url TEXT,
                     product_json TEXT NOT NULL,
                     critic_summary_json TEXT,
                     user_summary_json TEXT,
@@ -118,7 +119,15 @@ class SQLiteStorage:
                     ON user_reviews(slug);
                 """
             )
+            self._ensure_column("games", "cover_url", "TEXT")
             self.conn.commit()
+
+    def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
+        cursor = self.conn.execute(f"PRAGMA table_info({table_name})")
+        existing_columns = {str(row[1]) for row in cursor.fetchall()}
+        if column_name in existing_columns:
+            return
+        self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
     def upsert_game(
         self,
@@ -127,6 +136,7 @@ class SQLiteStorage:
         product_payload: dict,
         critic_summary_payload: dict | None,
         user_summary_payload: dict | None,
+        cover_url: str | None = None,
     ) -> None:
         item = product_payload.get("data", {}).get("item", {})
         critic_summary_item = (critic_summary_payload or {}).get("data", {}).get("item", {})
@@ -150,11 +160,11 @@ class SQLiteStorage:
                 """
                 INSERT INTO games (
                     slug, game_id, title, platform, release_date, premiere_year, rating,
-                    critic_score, critic_review_count, user_score, user_review_count,
+                    critic_score, critic_review_count, user_score, user_review_count, cover_url,
                     product_json, critic_summary_json, user_summary_json, scraped_at
                 ) VALUES (
                     :slug, :game_id, :title, :platform, :release_date, :premiere_year, :rating,
-                    :critic_score, :critic_review_count, :user_score, :user_review_count,
+                    :critic_score, :critic_review_count, :user_score, :user_review_count, :cover_url,
                     :product_json, :critic_summary_json, :user_summary_json, :scraped_at
                 )
                 ON CONFLICT(slug) DO UPDATE SET
@@ -168,6 +178,7 @@ class SQLiteStorage:
                     critic_review_count=excluded.critic_review_count,
                     user_score=excluded.user_score,
                     user_review_count=excluded.user_review_count,
+                    cover_url=excluded.cover_url,
                     product_json=excluded.product_json,
                     critic_summary_json=excluded.critic_summary_json,
                     user_summary_json=excluded.user_summary_json,
@@ -185,6 +196,7 @@ class SQLiteStorage:
                     "critic_review_count": critic_review_count,
                     "user_score": user_score,
                     "user_review_count": user_review_count,
+                    "cover_url": cover_url,
                     "product_json": _json_dumps(product_payload),
                     "critic_summary_json": _json_dumps(critic_summary_payload) if critic_summary_payload else None,
                     "user_summary_json": _json_dumps(user_summary_payload) if user_summary_payload else None,

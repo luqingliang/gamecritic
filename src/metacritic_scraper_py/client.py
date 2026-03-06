@@ -51,6 +51,48 @@ def slug_from_game_url(url: str) -> str | None:
     return parts[1]
 
 
+def normalize_bucket_path(bucket_path: str | None) -> str | None:
+    if not bucket_path:
+        return None
+    normalized = bucket_path.strip()
+    if not normalized:
+        return None
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized
+
+
+def cover_bucket_path_from_product(product_payload: dict) -> str | None:
+    item = product_payload.get("data", {}).get("item", {})
+    images = list(item.get("images") or [])
+    if not images:
+        return None
+
+    def _pick_path(candidates: list[dict]) -> str | None:
+        for image in candidates:
+            raw = image.get("bucketPath") or image.get("path")
+            if not isinstance(raw, str):
+                continue
+            normalized = normalize_bucket_path(raw)
+            if normalized:
+                return normalized
+        return None
+
+    for image_type in ("cardImage", "mainImage"):
+        matched = [image for image in images if image.get("typeName") == image_type]
+        chosen = _pick_path(matched)
+        if chosen:
+            return chosen
+    return _pick_path(images)
+
+
+def catalog_image_url_from_bucket_path(bucket_path: str | None) -> str | None:
+    normalized = normalize_bucket_path(bucket_path)
+    if not normalized:
+        return None
+    return f"{BASE_SITE_URL}/a/img/catalog{normalized}"
+
+
 class MetacriticClient:
     def __init__(
         self,
@@ -172,6 +214,18 @@ class MetacriticClient:
             "componentType": "Product",
         }
         return self._get_json(url, params=params)
+
+    def fetch_game_page_html(self, slug: str) -> str:
+        return self._get_text(f"{BASE_SITE_URL}/game/{slug}/")
+
+    def resolve_cover_url(
+        self,
+        *,
+        slug: str,
+        product_payload: dict,
+    ) -> str | None:
+        bucket_path = cover_bucket_path_from_product(product_payload)
+        return catalog_image_url_from_bucket_path(bucket_path)
 
     def fetch_score_summary(self, slug: str, review_type: ReviewType) -> dict:
         if review_type == "critic":
