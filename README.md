@@ -166,9 +166,6 @@ This project is licensed under the MIT License. See [LICENSE](./LICENSE).
 - [ ] Domain expansion: add Movies crawling
 - [ ] Domain expansion: add TV Shows crawling
 - [ ] Domain expansion: add Music crawling
-- [ ] Unified content hub: query across Games/Movies/TV/Music in one dataset
-- [ ] Rankings and trends: cross-domain score charts, popularity lists, release trends
-- [ ] Delivery layer: lightweight web viewer and scheduled exports (Excel/CSV)
 
 ## Notes
 
