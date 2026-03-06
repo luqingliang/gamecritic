@@ -10,6 +10,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.1.3] - 2026-03-06
+
+### Added
+- Persist game cover URL in `games.cover_url`, built from Product image `bucketPath`.
+- Cover URL helper tests and schema migration test for legacy databases.
+
+### Changed
+- Excel exporter now includes `cover_url` when present.
+- Excel export column selection is schema-aware for backward compatibility.
+- Roadmap updated to document current cover strategy (URL-only) and optional future binary sync.
+
 ## [0.1.2] - 2026-03-05
 
 ### Added
@@ -47,7 +58,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/luqingliang/metacritic-scraper-py/compare/release/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/luqingliang/metacritic-scraper-py/tree/release/v0.1.0
