@@ -181,7 +181,8 @@ This project is licensed under the MIT License. See [LICENSE](./LICENSE).
 - [x] Optional concurrent crawl: speed up batch crawling with `--concurrency`
 - [x] Interactive CLI mode: persistent shell with session-level settings
 - [x] Cover metadata: persist `games.cover_url` from Product `bucketPath` (store URL only, no binary download)
-- [x] Optional cover sync: support downloading cover files during crawl and via `download-covers`
+- [x] Cover binary sync (crawl-time): optional file download via `--download-covers` (default off)
+- [x] Cover binary sync (post-crawl): batch download from existing DB via `download-covers`
 - [ ] Domain expansion: add Movies crawling
 - [ ] Domain expansion: add TV Shows crawling
 - [ ] Domain expansion: add Music crawling

@@ -181,7 +181,8 @@ SQLite 表：
 - [x] 并发抓取（可选）：支持通过 `--concurrency` 提升批量抓取速度
 - [x] 交互模式 CLI：支持常驻运行与会话级配置
 - [x] 封面元数据：写入 `games.cover_url`（由 Product `bucketPath` 组装，仅保存链接，不下载图片实体）
-- [x] 封面文件同步（可选）：支持在抓取时或通过 `download-covers` 命令批量下载到本地
+- [x] 封面实体同步（抓取阶段）：支持 `--download-covers` 可选下载（默认关闭）
+- [x] 封面实体同步（后处理阶段）：支持通过 `download-covers` 基于已抓取数据批量下载
 - [ ] 内容扩展：增加电影（Movies）数据抓取
 - [ ] 内容扩展：增加电视剧/节目（TV Shows）数据抓取
 - [ ] 内容扩展：增加音乐（Music）数据抓取
