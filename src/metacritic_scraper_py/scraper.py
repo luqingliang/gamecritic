@@ -139,6 +139,8 @@ class MetacriticScraper:
             result.failed_slugs.append(slug)
             return result
 
+        cover_url = self.client.resolve_cover_url(slug=slug, product_payload=product)
+
         try:
             critic_summary = self.client.fetch_score_summary(slug, "critic")
         except MetacriticClientError as exc:
@@ -156,6 +158,7 @@ class MetacriticScraper:
             product_payload=product,
             critic_summary_payload=critic_summary,
             user_summary_payload=user_summary,
+            cover_url=cover_url,
         )
         result.games_crawled += 1
 
