@@ -9,11 +9,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
+
+## [0.1.4] - 2026-03-06
+
+### Added
 - Optional cover image binary download during `crawl` / `crawl-one` via `--download-covers`.
 - New `download-covers` command to batch download cover image files from existing `games.cover_url`.
+- New cover downloader module and tests for downloader + cover URL storage query flow.
 
 ### Changed
 - Interactive mode settings and help now include cover download controls.
+- Ignore downloaded cover files under `data/covers/`.
+- Roadmap text clarifies crawl-time and post-crawl cover sync modes.
 
 ## [0.1.3] - 2026-03-06
 
@@ -63,7 +70,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/luqingliang/metacritic-scraper-py/compare/release/v0.1.0...v0.1.1
