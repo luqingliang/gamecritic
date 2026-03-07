@@ -6,6 +6,7 @@ import logging
 import re
 import shlex
 import sys
+import threading
 from contextlib import redirect_stdout
 from datetime import date
 from pathlib import Path
@@ -301,6 +302,22 @@ def run_crawl(args: argparse.Namespace) -> int:
             result.covers_failed,
             len(result.failed_slugs),
         )
+        if bool(getattr(args, "print_summary", False)):
+            print(
+                (
+                    "crawl summary: games=%d critic_reviews=%d user_reviews=%d "
+                    "covers_downloaded=%d covers_skipped=%d covers_failed=%d failed=%d"
+                )
+                % (
+                    result.games_crawled,
+                    result.critic_reviews_saved,
+                    result.user_reviews_saved,
+                    result.covers_downloaded,
+                    result.covers_skipped,
+                    result.covers_failed,
+                    len(result.failed_slugs),
+                )
+            )
         if result.failed_slugs:
             logging.warning("failed slugs: %s", ",".join(result.failed_slugs))
         return 0
@@ -346,6 +363,22 @@ def run_crawl_one(args: argparse.Namespace) -> int:
             result.covers_failed,
             len(result.failed_slugs),
         )
+        if bool(getattr(args, "print_summary", False)):
+            print(
+                (
+                    "crawl-one summary: games=%d critic_reviews=%d user_reviews=%d "
+                    "covers_downloaded=%d covers_skipped=%d covers_failed=%d failed=%d"
+                )
+                % (
+                    result.games_crawled,
+                    result.critic_reviews_saved,
+                    result.user_reviews_saved,
+                    result.covers_downloaded,
+                    result.covers_skipped,
+                    result.covers_failed,
+                    len(result.failed_slugs),
+                )
+            )
         return 0 if not result.failed_slugs else 2
     finally:
         storage.close()
@@ -492,7 +525,7 @@ def _convert_setting_value(key: str, raw_value: str) -> object:
     raise KeyError(f"unknown setting key: {key}")
 
 
-def _print_interactive_help(include_clear: bool = False) -> str:
+def _print_interactive_help() -> str:
     lines = [
         "Interactive commands:",
         "  help                              Show help",
@@ -518,12 +551,10 @@ def _print_interactive_help(include_clear: bool = False) -> str:
         "  download-covers",
         "  crawl-one the-legend-of-zelda-breath-of-the-wild",
     ]
-    if include_clear:
-        lines.insert(3, "  clear                             Clear screen output")
     return "\n".join(lines)
 
 
-def _print_interactive_help_zh(include_clear: bool = False) -> str:
+def _print_interactive_help_zh() -> str:
     lines = [
         "交互命令（中文释义）:",
         "  help                              显示英文帮助",
@@ -547,8 +578,6 @@ def _print_interactive_help_zh(include_clear: bool = False) -> str:
         "  download-covers",
         "  export-excel data/metacritic_export.xlsx",
     ]
-    if include_clear:
-        lines.insert(3, "  clear                             清屏")
     return "\n".join(lines)
 
 
@@ -630,6 +659,48 @@ def _style_output_line(line: str) -> list[tuple[str, str]]:
     if line.startswith("metacritic>"):
         return [("class:prompt", line)]
 
+    if line.startswith("crawl summary:") or line.startswith("crawl-one summary:"):
+        match = re.match(r"^(crawl(?:-one)? summary:)\s*(.*)$", line)
+        if match:
+            label = match.group(1)
+            rest = match.group(2)
+            fragments: list[tuple[str, str]] = [("class:summary.label", label)]
+            if rest:
+                fragments.append(("", " "))
+                parts = [p for p in rest.split(" ") if p]
+                for idx, part in enumerate(parts):
+                    kv = part.split("=", 1)
+                    if len(kv) == 2:
+                        key, value = kv
+                        fragments.extend(
+                            [
+                                ("class:summary.key", key),
+                                ("", "="),
+                                ("class:summary.value", value),
+                            ]
+                        )
+                    else:
+                        fragments.append(("class:summary.value", part))
+                    if idx < len(parts) - 1:
+                        fragments.append(("", " "))
+                return fragments
+
+    log_match = re.match(
+        r"^(?P<prefix>\S+\s+\S+\s+)(?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)(?P<suffix>\s+\S+\s+-\s+)(?P<message>.*)$",
+        line,
+    )
+    if log_match:
+        level = log_match.group("level")
+        header = f"{log_match.group('prefix')}{level}{log_match.group('suffix')}"
+        message = log_match.group("message")
+        if level == "WARNING":
+            return [("class:log.warning", header), ("", message)]
+        if level in {"ERROR", "CRITICAL"}:
+            return [("class:log.error", header), ("", message)]
+
+    if "download-covers finished" in line or "cover download" in line:
+        return [("class:log.cover", line)]
+
     match = re.match(r"^([A-Za-z0-9_]+)\s=\s(.*)$", line)
     if not match:
         return [("", line)]
@@ -653,10 +724,23 @@ def _style_output_line(line: str) -> list[tuple[str, str]]:
     ]
 
 
+def _style_output_text(text: str) -> list[tuple[str, str]]:
+    lines = str(text).split("\n")
+    fragments: list[tuple[str, str]] = []
+    for idx, line in enumerate(lines):
+        fragments.extend(_style_output_line(line))
+        if idx < len(lines) - 1:
+            fragments.append(("", "\n"))
+    return fragments
+
+
 def _interactive_banner_lines() -> list[str]:
     return [
         "Metacritic Scraper Interactive Shell",
-        "Type 'help' to see commands. Press Ctrl-C/Ctrl-D to exit.",
+        (
+            "Type 'help' to see commands. Output streams to terminal. "
+            "Prompt stays at bottom. Ctrl-C/Ctrl-D exits."
+        ),
     ]
 
 
@@ -665,12 +749,29 @@ def _run_with_captured_stdout(
     namespace: argparse.Namespace,
     emit: Callable[[str], None],
 ) -> None:
-    buffer = io.StringIO()
-    with redirect_stdout(buffer):
+    class _StreamingStdout(io.TextIOBase):
+        def __init__(self, emit_func: Callable[[str], None]) -> None:
+            self._emit = emit_func
+            self._pending = ""
+
+        def write(self, text: str) -> int:  # type: ignore[override]
+            if not text:
+                return 0
+            self._pending += text
+            while "\n" in self._pending:
+                line, self._pending = self._pending.split("\n", 1)
+                self._emit(line)
+            return len(text)
+
+        def flush(self) -> None:  # type: ignore[override]
+            if self._pending:
+                self._emit(self._pending)
+                self._pending = ""
+
+    stream = _StreamingStdout(emit)
+    with redirect_stdout(stream):
         exit_code = func(namespace)
-    output = buffer.getvalue().strip()
-    if output:
-        emit(output)
+        stream.flush()
     emit(f"[done] exit_code={exit_code}")
 
 
@@ -678,8 +779,6 @@ def _run_interactive_command(
     tokens: list[str],
     settings: dict[str, object],
     emit: Callable[[str], None],
-    include_clear: bool = False,
-    clear_output: Callable[[], None] | None = None,
 ) -> bool:
     cmd = tokens[0].lower()
     args = tokens[1:]
@@ -688,16 +787,12 @@ def _run_interactive_command(
         return False
     if cmd in {"help", "h", "?"}:
         if args and args[0].lower() in {"zh", "cn"}:
-            emit(_print_interactive_help_zh(include_clear=include_clear))
+            emit(_print_interactive_help_zh())
         else:
-            emit(_print_interactive_help(include_clear=include_clear))
+            emit(_print_interactive_help())
         return True
     if cmd in {"help-zh", "help_cn", "help-cn", "帮助"}:
-        emit(_print_interactive_help_zh(include_clear=include_clear))
-        return True
-    if include_clear and cmd in {"clear", "cls"}:
-        if clear_output is not None:
-            clear_output()
+        emit(_print_interactive_help_zh())
         return True
     if cmd in {"show-zh", "show_cn", "show-cn", "配置"}:
         emit(_format_settings_zh(settings))
@@ -756,6 +851,7 @@ def _run_interactive_command(
                 download_covers=settings["download_covers"],
                 covers_dir=settings["covers_dir"],
                 overwrite_covers=settings["overwrite_covers"],
+                print_summary=True,
             )
             _run_with_captured_stdout(run_crawl, ns, emit)
             return True
@@ -778,6 +874,7 @@ def _run_interactive_command(
                 download_covers=settings["download_covers"],
                 covers_dir=settings["covers_dir"],
                 overwrite_covers=settings["overwrite_covers"],
+                print_summary=True,
             )
             _run_with_captured_stdout(run_crawl_one, ns, emit)
             return True
@@ -844,8 +941,8 @@ class _InteractiveLogHandler(logging.Handler):
 
 
 def _run_interactive_plain(settings: dict[str, object]) -> int:
-    print("Metacritic Scraper Interactive Shell")
-    print("Type 'help' to see commands.")
+    for line in _interactive_banner_lines():
+        print(line)
     while True:
         try:
             line = input("metacritic> ").strip()
@@ -869,127 +966,118 @@ def run_interactive() -> int:
         return _run_interactive_plain(settings)
 
     try:
-        from prompt_toolkit import Application
-        from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.layout import HSplit, Layout, Window
-        from prompt_toolkit.lexers import Lexer
+        from prompt_toolkit import PromptSession, print_formatted_text
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.patch_stdout import patch_stdout
         from prompt_toolkit.styles import Style
-        from prompt_toolkit.widgets import Frame, TextArea
     except Exception:
         return _run_interactive_plain(settings)
 
-    class _InteractiveOutputLexer(Lexer):
-        def lex_document(self, document):
-            lines = document.lines
-
-            def get_line(lineno: int):
-                if lineno < 0 or lineno >= len(lines):
-                    return []
-                return _style_output_line(lines[lineno])
-
-            return get_line
-
-    output_lines: list[str] = []
-    max_lines = 5000
-
-    output_box = TextArea(
-        text="",
-        focusable=False,
-        read_only=True,
-        scrollbar=True,
-        wrap_lines=False,
-        lexer=_InteractiveOutputLexer(),
+    output_lock = threading.Lock()
+    running_command: dict[str, object | None] = {"thread": None, "name": None}
+    output_style = Style.from_dict(
+        {
+            "prompt": "bold ansicyan",
+            "summary.label": "bold ansibrightgreen",
+            "summary.key": "ansibrightgreen",
+            "summary.value": "bold ansiwhite",
+            "log.warning": "bold ansibrightyellow",
+            "log.error": "bold ansibrightred",
+            "log.cover": "bold ansibrightcyan",
+            "settings.key": "ansibrightblue",
+            "settings.value": "bold ansiyellow",
+            "settings.comment_prefix": "ansibrightblack",
+            "settings.comment": "ansibrightblack",
+        }
     )
-    input_box = TextArea(
-        height=1,
-        prompt="metacritic> ",
-        multiline=False,
-        wrap_lines=False,
+    prompt_style = Style.from_dict(
+        {
+            "prompt": "bold ansicyan",
+        }
     )
 
-    def append_output(message: str) -> None:
-        for line in str(message).splitlines() or [""]:
-            output_lines.append(line)
-        if len(output_lines) > max_lines:
-            del output_lines[: len(output_lines) - max_lines]
-        output_box.text = "\n".join(output_lines)
-        output_box.buffer.cursor_position = len(output_box.text)
+    def emit_output(message: str) -> None:
+        with output_lock:
+            print_formatted_text(
+                FormattedText(_style_output_text(str(message))),
+                style=output_style,
+            )
 
-    def clear_output() -> None:
-        output_lines.clear()
-        output_lines.extend(_interactive_banner_lines())
-        output_box.text = "\n".join(output_lines)
-        output_box.buffer.cursor_position = len(output_box.text)
+    def _command_is_running() -> bool:
+        thread = running_command.get("thread")
+        if thread is None:
+            return False
+        return bool(getattr(thread, "is_alive", lambda: False)())
 
-    kb = KeyBindings()
-
-    @kb.add("enter")
-    def _(event) -> None:
-        line = input_box.text.strip()
-        input_box.text = ""
-        if not line:
+    def _run_command_in_background(tokens: list[str]) -> None:
+        if _command_is_running():
+            emit_output(f"[busy] command is still running: {running_command.get('name')}")
             return
-        append_output(f"metacritic> {line}")
-        try:
-            tokens = shlex.split(line)
-        except ValueError as exc:
-            append_output(f"Invalid input: {exc}")
-            return
-        if not _run_interactive_command(
-            tokens,
-            settings,
-            append_output,
-            include_clear=True,
-            clear_output=clear_output,
-        ):
-            event.app.exit(result=0)
 
-    @kb.add("c-c")
-    @kb.add("c-d")
-    def _(event) -> None:
-        event.app.exit(result=0)
+        command_name = str(tokens[0]).lower()
 
-    app = Application(
-        layout=Layout(
-            HSplit(
-                [
-                    Frame(output_box, title="Metacritic Scraper"),
-                    Window(height=1, char="-"),
-                    input_box,
-                ]
-            ),
-            focused_element=input_box,
-        ),
-        key_bindings=kb,
-        full_screen=True,
-        mouse_support=True,
-        style=Style.from_dict(
-            {
-                "frame.label": "bold",
-                "prompt": "bold ansicyan",
-                "settings.key": "ansibrightblue",
-                "settings.value": "bold ansiyellow",
-                "settings.comment_prefix": "ansibrightblack",
-                "settings.comment": "ansibrightblack",
-            }
-        ),
-    )
+        def _worker() -> None:
+            try:
+                _run_interactive_command(
+                    tokens,
+                    settings,
+                    emit_output,
+                )
+            finally:
+                running_command["thread"] = None
+                running_command["name"] = None
+
+        running_command["name"] = command_name
+        worker = threading.Thread(target=_worker, name=f"interactive-{command_name}", daemon=True)
+        running_command["thread"] = worker
+        emit_output(f"[running] {command_name} (prompt remains responsive)")
+        worker.start()
 
     root_logger = logging.getLogger()
     previous_handlers = list(root_logger.handlers)
     previous_level = root_logger.level
     for handler in previous_handlers:
         root_logger.removeHandler(handler)
-    ui_handler = _InteractiveLogHandler(append_output)
+    ui_handler = _InteractiveLogHandler(emit_output)
     root_logger.addHandler(ui_handler)
     root_logger.setLevel(previous_level)
 
-    for banner_line in _interactive_banner_lines():
-        append_output(banner_line)
+    session = PromptSession()
+    background_commands = {"crawl", "crawl-one", "slugs", "download-covers", "export-excel"}
+    emit_output("\n".join(_interactive_banner_lines()))
 
     try:
-        result = app.run()
-        return int(result or 0)
+        with patch_stdout():
+            while True:
+                try:
+                    line = session.prompt(
+                        [("class:prompt", "metacritic> ")],
+                        style=prompt_style,
+                    ).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return 0
+
+                if not line:
+                    continue
+
+                try:
+                    tokens = shlex.split(line)
+                except ValueError as exc:
+                    emit_output(f"Invalid input: {exc}")
+                    continue
+
+                cmd = tokens[0].lower()
+                if cmd in background_commands:
+                    _run_command_in_background(tokens)
+                    continue
+
+                if not _run_interactive_command(
+                    tokens,
+                    settings,
+                    emit_output,
+                ):
+                    return 0
     finally:
         root_logger.removeHandler(ui_handler)
         for handler in previous_handlers:
