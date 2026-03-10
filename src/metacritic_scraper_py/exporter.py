@@ -59,8 +59,6 @@ def export_sqlite_to_excel(
     *,
     db_path: str | Path,
     output_path: str | Path,
-    slug: str | None = None,
-    include_raw_json: bool = False,
 ) -> dict[str, int]:
     db_path = Path(db_path)
     output_path = Path(output_path)
@@ -84,8 +82,6 @@ def export_sqlite_to_excel(
         "cover_url",
         "scraped_at",
     ]
-    if include_raw_json:
-        games_columns.extend(["product_json", "critic_summary_json", "user_summary_json"])
 
     critic_columns = [
         "slug",
@@ -98,8 +94,6 @@ def export_sqlite_to_excel(
         "quote",
         "scraped_at",
     ]
-    if include_raw_json:
-        critic_columns.append("review_json")
 
     user_columns = [
         "review_id",
@@ -111,11 +105,8 @@ def export_sqlite_to_excel(
         "quote",
         "scraped_at",
     ]
-    if include_raw_json:
-        user_columns.append("review_json")
 
-    where_clause = " WHERE slug = ?"
-    params: tuple[Any, ...] = (slug,) if slug else tuple()
+    params: tuple[Any, ...] = tuple()
 
     with sqlite3.connect(db_path) as conn:
         games_columns = [col for col in games_columns if col in _table_columns(conn, "games")]
@@ -125,10 +116,6 @@ def export_sqlite_to_excel(
         games_query = f"SELECT {', '.join(games_columns)} FROM games"
         critic_query = f"SELECT {', '.join(critic_columns)} FROM critic_reviews"
         user_query = f"SELECT {', '.join(user_columns)} FROM user_reviews"
-        if slug:
-            games_query += where_clause
-            critic_query += where_clause
-            user_query += where_clause
 
         games_rows = _fetch_rows(conn, games_query, params)
         critic_rows = _fetch_rows(conn, critic_query, params)
@@ -140,7 +127,6 @@ def export_sqlite_to_excel(
     summary_rows = [
         ("generated_at", _utc_now_iso()),
         ("database", str(db_path)),
-        ("slug_filter", slug or "ALL"),
         ("games_rows", len(games_rows)),
         ("critic_reviews_rows", len(critic_rows)),
         ("user_reviews_rows", len(user_rows)),

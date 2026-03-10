@@ -9,7 +9,7 @@ import shlex
 import sys
 import threading
 from contextlib import redirect_stdout
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence
 
 from .client import MetacriticClient
@@ -24,16 +24,25 @@ from .exporter import export_sqlite_to_excel
 from .scraper import MetacriticScraper
 from .storage import SQLiteStorage
 
-DEFAULT_QUICKSTART_MAX_GAMES = 50
 DEFAULT_QUICKSTART_MAX_REVIEW_PAGES = 1
+DEFAULT_CONCURRENCY = 4
 DEFAULT_SLUG_SYNC_BATCH_SIZE = 500
+GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY = "game_slugs_last_successful_full_sync_at"
+GAME_SLUGS_FULL_SYNC_MAX_AGE = timedelta(days=7)
 INTERACTIVE_COMPOSER_MIN_LINES = 3
 INTERACTIVE_COMPOSER_MAX_LINES = 8
 INTERACTIVE_WELCOME_CONTENT_WIDTH = 74
 INTERACTIVE_WELCOME_LABEL_WIDTH = 28
 INTERACTIVE_WELCOME_TITLE = "METACRITIC SCRAPER"
 LOG_BULLET = "●"
-LOG_FORMAT = f"{LOG_BULLET} %(levelname)s %(name)s - %(message)s"
+LOG_FORMAT = f"{LOG_BULLET} %(levelname)s%(progress_display)s - %(message)s"
+
+
+class _ProgressAwareFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        progress = str(getattr(record, "progress", "") or "").strip()
+        record.progress_display = f" {progress}" if progress else ""
+        return super().format(record)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,22 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
-    crawl = subparsers.add_parser("crawl", help="Crawl games from games sitemap.")
+    crawl = subparsers.add_parser("crawl", help="Crawl games using slugs stored in SQLite.")
     crawl.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    crawl.add_argument(
-        "--max-games",
-        type=int,
-        default=DEFAULT_QUICKSTART_MAX_GAMES,
-        help=f"Stop after N games (default: {DEFAULT_QUICKSTART_MAX_GAMES}).",
-    )
-    crawl.add_argument("--start-slug", default=None, help="Start crawling when this slug is reached (sitemap mode).")
-    crawl.add_argument("--limit-sitemaps", type=int, default=None, help="Read only first N sitemap files (sitemap mode).")
-    crawl.add_argument("--limit-slugs", type=int, default=None, help="Read only first N slugs from sitemap (sitemap mode).")
     crawl.add_argument(
         "--include-reviews",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Also crawl critic and user reviews (default: true).",
+        default=False,
+        help="Also crawl critic and user reviews (default: false).",
     )
     crawl.add_argument("--review-page-size", type=int, default=50, help="Reviews page size.")
     crawl.add_argument(
@@ -72,35 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument(
         "--concurrency",
         type=int,
-        default=1,
-        help="Optional concurrent slug workers (default: 1).",
-    )
-    crawl.add_argument(
-        "--incremental-by-date",
-        action="store_true",
-        help="Enable incremental crawl by releaseDate (finder endpoint).",
-    )
-    crawl.add_argument(
-        "--since-date",
-        default=None,
-        help="Override incremental start date in YYYY-MM-DD format.",
-    )
-    crawl.add_argument(
-        "--lookback-days",
-        type=int,
-        default=3,
-        help="Re-crawl this many days before checkpoint for safety.",
-    )
-    crawl.add_argument(
-        "--finder-page-size",
-        type=int,
-        default=24,
-        help="Page size when incremental-by-date is enabled.",
-    )
-    crawl.add_argument(
-        "--incremental-state-key",
-        default="games_incremental_release_date",
-        help="DB state key used to store incremental checkpoint date.",
+        default=DEFAULT_CONCURRENCY,
+        help=f"Optional concurrent slug workers (default: {DEFAULT_CONCURRENCY}).",
     )
     crawl.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
     crawl.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Retry attempts.")
@@ -130,8 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     crawl_one.add_argument(
         "--include-reviews",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Also crawl critic and user reviews (default: true).",
+        default=False,
+        help="Also crawl critic and user reviews (default: false).",
     )
     crawl_one.add_argument("--review-page-size", type=int, default=50, help="Reviews page size.")
     crawl_one.add_argument(
@@ -167,8 +140,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sync game slugs from games sitemap into SQLite.",
     )
     sync_slugs.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    sync_slugs.add_argument("--limit-sitemaps", type=int, default=None, help="Read only first N sitemap files.")
-    sync_slugs.add_argument("--limit-slugs", type=int, default=None, help="Read only first N slugs.")
     sync_slugs.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
     sync_slugs.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Retry attempts.")
     sync_slugs.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF_SECONDS, help="Retry backoff base seconds.")
@@ -181,18 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
     export_excel.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
     export_excel.add_argument(
         "--output",
-        default="data/metacritic_export.xlsx",
+        default="data/excel/metacritic_export.xlsx",
         help="Output Excel file path.",
-    )
-    export_excel.add_argument(
-        "--slug",
-        default=None,
-        help="Optional slug filter to export one game and its reviews.",
-    )
-    export_excel.add_argument(
-        "--include-raw-json",
-        action="store_true",
-        help="Include raw JSON columns in Excel sheets.",
     )
 
     download_covers = subparsers.add_parser(
@@ -204,17 +165,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default="data/covers",
         help="Output directory for downloaded cover image files.",
-    )
-    download_covers.add_argument(
-        "--slug",
-        default=None,
-        help="Optional slug filter to download only one game's cover.",
-    )
-    download_covers.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Download at most N covers.",
     )
     download_covers.add_argument(
         "--overwrite",
@@ -241,7 +191,9 @@ def configure_logging(verbose: bool) -> None:
         level=level,
         format=LOG_FORMAT,
     )
+    formatter = _ProgressAwareFormatter(LOG_FORMAT)
     for handler in logging.getLogger().handlers:
+        handler.setFormatter(formatter)
         handler.terminator = "\n\n"
     if not verbose:
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -268,12 +220,80 @@ def _build_client(args: argparse.Namespace) -> MetacriticClient:
     )
 
 
+def _parse_checkpoint_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _should_auto_sync_game_slugs_before_crawl(storage: SQLiteStorage) -> bool:
+    state_value = storage.get_state(GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY)
+    if state_value is None:
+        logging.info("game_slugs checkpoint missing; running sync-slugs before crawl")
+        return True
+
+    checkpoint = _parse_checkpoint_datetime(state_value)
+    if checkpoint is None:
+        if isinstance(state_value, str):
+            logging.warning(
+                "game_slugs checkpoint is invalid state_value=%s; running sync-slugs before crawl",
+                state_value,
+            )
+            return True
+        return False
+
+    now = datetime.now(timezone.utc)
+    age = now - checkpoint
+    if age >= GAME_SLUGS_FULL_SYNC_MAX_AGE:
+        logging.info(
+            "game_slugs checkpoint stale state_value=%s age_seconds=%d; running sync-slugs before crawl",
+            checkpoint.isoformat(),
+            int(age.total_seconds()),
+        )
+        return True
+
+    logging.info(
+        "game_slugs checkpoint fresh state_value=%s age_seconds=%d; skipping sync-slugs before crawl",
+        checkpoint.isoformat(),
+        max(0, int(age.total_seconds())),
+    )
+    return False
+
+
+def _build_auto_sync_slugs_args(args: argparse.Namespace) -> argparse.Namespace:
+    return argparse.Namespace(
+        db=args.db,
+        timeout=args.timeout,
+        max_retries=args.max_retries,
+        backoff=args.backoff,
+        delay=args.delay,
+        print_summary=False,
+        stop_event=_get_stop_event(args),
+    )
+
+
+def _maybe_run_auto_sync_slugs_before_crawl(args: argparse.Namespace, storage: SQLiteStorage) -> int | None:
+    if not _should_auto_sync_game_slugs_before_crawl(storage):
+        return None
+
+    logging.info("auto sync-slugs before crawl db=%s", args.db)
+    exit_code = run_sync_slugs(_build_auto_sync_slugs_args(args))
+    if exit_code != 0:
+        logging.warning("sync-slugs before crawl exited with code=%d; crawl aborted", exit_code)
+        return exit_code
+    return None
+
+
 def run_crawl(args: argparse.Namespace) -> int:
-    if args.since_date:
-        try:
-            date.fromisoformat(args.since_date)
-        except ValueError as exc:
-            raise SystemExit("--since-date must be in YYYY-MM-DD format") from exc
     if args.concurrency < 1:
         raise SystemExit("--concurrency must be >= 1")
     download_covers = bool(getattr(args, "download_covers", False))
@@ -283,37 +303,21 @@ def run_crawl(args: argparse.Namespace) -> int:
 
     storage = SQLiteStorage(args.db)
     try:
+        auto_sync_exit_code = _maybe_run_auto_sync_slugs_before_crawl(args, storage)
+        if auto_sync_exit_code is not None:
+            return auto_sync_exit_code
+
         with _build_client(args) as client:
             scraper = MetacriticScraper(client, storage, stop_event=stop_event)
-            if args.incremental_by_date:
-                result = scraper.crawl_incremental_by_date(
-                    include_reviews=args.include_reviews,
-                    review_page_size=args.review_page_size,
-                    max_review_pages=args.max_review_pages,
-                    max_games=args.max_games,
-                    since_date=args.since_date,
-                    lookback_days=args.lookback_days,
-                    finder_page_size=args.finder_page_size,
-                    state_key=args.incremental_state_key,
-                    concurrency=args.concurrency,
-                    download_covers=download_covers,
-                    covers_dir=covers_dir,
-                    overwrite_covers=overwrite_covers,
-                )
-            else:
-                result = scraper.crawl_from_sitemaps(
-                    include_reviews=args.include_reviews,
-                    review_page_size=args.review_page_size,
-                    max_review_pages=args.max_review_pages,
-                    max_games=args.max_games,
-                    start_slug=args.start_slug,
-                    limit_sitemaps=args.limit_sitemaps,
-                    limit_slugs=args.limit_slugs,
-                    concurrency=args.concurrency,
-                    download_covers=download_covers,
-                    covers_dir=covers_dir,
-                    overwrite_covers=overwrite_covers,
-                )
+            result = scraper.crawl_from_sitemaps(
+                include_reviews=args.include_reviews,
+                review_page_size=args.review_page_size,
+                max_review_pages=args.max_review_pages,
+                concurrency=args.concurrency,
+                download_covers=download_covers,
+                covers_dir=covers_dir,
+                overwrite_covers=overwrite_covers,
+            )
         logging.info(
             (
                 "crawl %s games=%d critic_reviews=%d user_reviews=%d "
@@ -347,8 +351,6 @@ def run_crawl(args: argparse.Namespace) -> int:
             if result.stopped:
                 summary = f"{summary} stopped=1"
             print(summary)
-        if result.failed_slugs:
-            logging.warning("failed slugs: %s", ",".join(result.failed_slugs))
         return 130 if result.stopped else 0
     finally:
         storage.close()
@@ -443,26 +445,6 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
     processed = 0
     inserted = 0
     updated = 0
-    if args.limit_slugs is not None and args.limit_slugs <= 0:
-        total = storage.count_rows("game_slugs")
-        logging.info(
-            "sync-slugs finished processed=%d inserted=%d updated=%d total=%d db=%s",
-            processed,
-            inserted,
-            updated,
-            total,
-            args.db,
-        )
-        if bool(getattr(args, "print_summary", False)):
-            print(
-                _sync_slugs_summary_text(
-                    processed=processed,
-                    inserted=inserted,
-                    updated=updated,
-                    total=total,
-                )
-            )
-        return 0
     current_sitemap_url: str | None = None
     current_batch: list[tuple[str, str, str]] = []
     current_seen_slugs: set[str] = set()
@@ -505,10 +487,7 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
     try:
         with _build_client(args) as client:
             try:
-                remaining_slugs = args.limit_slugs
-                reached_slug_limit = False
-
-                for sitemap_url in client.iter_game_sitemap_urls(limit_sitemaps=args.limit_sitemaps):
+                for sitemap_url in client.iter_game_sitemap_urls():
                     _check_stop_requested(stop_event)
                     current_sitemap_url = sitemap_url
                     current_batch = []
@@ -529,18 +508,9 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
                         if len(current_batch) >= DEFAULT_SLUG_SYNC_BATCH_SIZE:
                             _flush_current_batch()
 
-                        if remaining_slugs is not None:
-                            remaining_slugs -= 1
-                            if remaining_slugs <= 0:
-                                reached_slug_limit = True
-                                break
-
                     _flush_current_batch()
                     _log_current_sitemap()
                     current_sitemap_url = None
-
-                    if reached_slug_limit:
-                        break
             except InterruptedError:
                 _flush_current_batch()
                 _log_current_sitemap(stopped=True)
@@ -568,6 +538,13 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
                 current_sitemap_url = None
 
         total = storage.count_rows("game_slugs")
+        state_value = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        storage.set_state(GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY, state_value)
+        logging.info(
+            "sync-slugs checkpoint state_key=%s state_value=%s",
+            GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
+            state_value,
+        )
         logging.info(
             "sync-slugs finished processed=%d inserted=%d updated=%d total=%d db=%s",
             processed,
@@ -594,8 +571,6 @@ def run_export_excel(args: argparse.Namespace) -> int:
     counts = export_sqlite_to_excel(
         db_path=args.db,
         output_path=args.output,
-        slug=args.slug,
-        include_raw_json=args.include_raw_json,
     )
     logging.info(
         "excel exported to %s games=%d critic_reviews=%d user_reviews=%d",
@@ -608,13 +583,10 @@ def run_export_excel(args: argparse.Namespace) -> int:
 
 
 def run_download_covers(args: argparse.Namespace) -> int:
-    if args.limit is not None and args.limit < 1:
-        raise SystemExit("--limit must be >= 1")
-
     stop_event = _get_stop_event(args)
     storage = SQLiteStorage(args.db)
     try:
-        rows = storage.list_game_cover_urls(slug=args.slug, limit=args.limit)
+        rows = storage.list_game_cover_urls()
         with _build_client(args) as client:
             downloader = CoverImageDownloader(
                 fetch_binary=client.fetch_binary,
@@ -661,19 +633,10 @@ def run_download_covers(args: argparse.Namespace) -> int:
 def _interactive_defaults() -> dict[str, object]:
     return {
         "db": "data/metacritic.db",
-        "max_games": DEFAULT_QUICKSTART_MAX_GAMES,
-        "start_slug": None,
-        "limit_sitemaps": None,
-        "limit_slugs": None,
-        "include_reviews": True,
+        "include_reviews": False,
         "review_page_size": 50,
         "max_review_pages": DEFAULT_QUICKSTART_MAX_REVIEW_PAGES,
-        "concurrency": 1,
-        "incremental_by_date": False,
-        "since_date": None,
-        "lookback_days": 3,
-        "finder_page_size": 24,
-        "incremental_state_key": "games_incremental_release_date",
+        "concurrency": DEFAULT_CONCURRENCY,
         "timeout": DEFAULT_TIMEOUT_SECONDS,
         "max_retries": DEFAULT_MAX_RETRIES,
         "backoff": DEFAULT_BACKOFF_SECONDS,
@@ -681,9 +644,7 @@ def _interactive_defaults() -> dict[str, object]:
         "download_covers": False,
         "covers_dir": "data/covers",
         "overwrite_covers": False,
-        "export_output": "data/metacritic_export.xlsx",
-        "slug_filter": None,
-        "include_raw_json": False,
+        "export_output": "data/excel/metacritic_export.xlsx",
     }
 
 
@@ -697,17 +658,14 @@ def _parse_bool(raw: str) -> bool:
 
 
 def _convert_setting_value(key: str, raw_value: str) -> object:
-    bool_keys = {"include_reviews", "incremental_by_date", "include_raw_json", "download_covers", "overwrite_covers"}
+    bool_keys = {"include_reviews", "download_covers", "overwrite_covers"}
     int_keys = {
         "review_page_size",
         "concurrency",
-        "lookback_days",
-        "finder_page_size",
         "max_retries",
     }
     float_keys = {"timeout", "backoff", "delay"}
-    optional_int_keys = {"max_games", "max_review_pages", "limit_sitemaps", "limit_slugs"}
-    optional_str_keys = {"start_slug", "since_date", "slug_filter"}
+    optional_int_keys = {"max_review_pages"}
 
     value = raw_value.strip()
     if key in bool_keys:
@@ -718,9 +676,7 @@ def _convert_setting_value(key: str, raw_value: str) -> object:
         return float(value)
     if key in optional_int_keys:
         return None if value.lower() in {"none", "null", ""} else int(value)
-    if key in optional_str_keys:
-        return None if value.lower() in {"none", "null", ""} else value
-    if key in {"db", "incremental_state_key", "export_output", "covers_dir"}:
+    if key in {"db", "export_output", "covers_dir"}:
         return value
     raise KeyError(f"unknown setting key: {key}")
 
@@ -747,7 +703,6 @@ def _print_interactive_help() -> str:
         "  set include_reviews true",
         "  set concurrency 4",
         "  set download_covers true",
-        "  set incremental_by_date true",
         "  crawl",
         "  sync-slugs",
         "  download-covers",
@@ -780,7 +735,7 @@ def _print_interactive_help_zh() -> str:
         "  crawl",
         "  sync-slugs",
         "  download-covers",
-        "  export-excel data/metacritic_export.xlsx",
+        "  export-excel data/excel/metacritic_export.xlsx",
     ]
     return "\n".join(lines)
 
@@ -794,22 +749,11 @@ def _setting_explanations_en() -> dict[str, str]:
         "delay": "Fixed delay in seconds between requests",
         "download_covers": "Whether to download cover image files during crawl",
         "export_output": "Default output path for Excel export",
-        "finder_page_size": "Page size for incremental-by-date finder mode",
-        "include_raw_json": "Whether to include raw JSON columns when exporting",
         "include_reviews": "Whether to crawl critic and user reviews",
-        "incremental_by_date": "Enable incremental crawling ordered by release date",
-        "incremental_state_key": "DB state key used to persist incremental checkpoint",
-        "limit_sitemaps": "Maximum number of sitemap files to read in full mode",
-        "limit_slugs": "Maximum number of slugs to process in full mode",
-        "lookback_days": "Safety lookback window in days for incremental mode",
-        "max_games": "Maximum number of games to crawl in this run",
         "max_retries": "Maximum retry attempts for failed requests",
         "max_review_pages": "Maximum review pages per review type",
         "overwrite_covers": "Whether to overwrite existing cover image files",
         "review_page_size": "Review API page size",
-        "since_date": "Incremental start date in YYYY-MM-DD format",
-        "slug_filter": "Optional slug filter when exporting",
-        "start_slug": "Start crawling from this slug in full sitemap mode",
         "timeout": "HTTP timeout in seconds per request",
     }
 
@@ -831,22 +775,11 @@ def _setting_explanations_zh() -> dict[str, str]:
         "delay": "每次请求之间的固定等待秒数",
         "download_covers": "抓取游戏时是否同时下载封面图片实体",
         "export_output": "导出 Excel 的默认输出路径",
-        "finder_page_size": "增量模式每页抓取数量",
-        "include_raw_json": "导出时是否包含原始 JSON 字段",
         "include_reviews": "是否抓取媒体评论和用户评论",
-        "incremental_by_date": "是否启用按发布日期的增量抓取",
-        "incremental_state_key": "数据库中保存增量检查点的键名",
-        "limit_sitemaps": "全量模式最多读取的 sitemap 文件数",
-        "limit_slugs": "全量模式最多处理的 slug 数",
-        "lookback_days": "增量模式回看天数，降低漏抓风险",
-        "max_games": "本次最多抓取的游戏数量",
         "max_retries": "请求失败后的最大重试次数",
         "max_review_pages": "每类评论最多翻页数",
         "overwrite_covers": "下载封面时是否覆盖本地已有文件",
         "review_page_size": "评论接口每页抓取条数",
-        "since_date": "增量抓取起始日期（YYYY-MM-DD）",
-        "slug_filter": "导出时只过滤某个 slug",
-        "start_slug": "全量模式从指定 slug 开始抓取",
         "timeout": "单次 HTTP 请求超时秒数",
     }
 
@@ -890,7 +823,7 @@ def _style_output_line(line: str) -> list[tuple[str, str]]:
                 return fragments
 
     log_match = re.match(
-        rf"^(?P<bullet>{re.escape(LOG_BULLET)}\s+)?(?P<header>(?:(?:\S+\s+\S+\s+))?(?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+\S+\s+-\s+)(?P<message>.*)$",
+        rf"^(?P<bullet>{re.escape(LOG_BULLET)}\s+)?(?P<header>(?:(?:\S+\s+\S+\s+))?(?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)(?:\s+(?!-)\S+)?\s+-\s+)(?P<message>.*)$",
         line,
     )
     if log_match:
@@ -1194,19 +1127,10 @@ def _run_interactive_command(
         if cmd == "crawl":
             ns = argparse.Namespace(
                 db=settings["db"],
-                max_games=settings["max_games"],
-                start_slug=settings["start_slug"],
-                limit_sitemaps=settings["limit_sitemaps"],
-                limit_slugs=settings["limit_slugs"],
                 include_reviews=settings["include_reviews"],
                 review_page_size=settings["review_page_size"],
                 max_review_pages=settings["max_review_pages"],
                 concurrency=settings["concurrency"],
-                incremental_by_date=settings["incremental_by_date"],
-                since_date=settings["since_date"],
-                lookback_days=settings["lookback_days"],
-                finder_page_size=settings["finder_page_size"],
-                incremental_state_key=settings["incremental_state_key"],
                 timeout=settings["timeout"],
                 max_retries=settings["max_retries"],
                 backoff=settings["backoff"],
@@ -1249,8 +1173,6 @@ def _run_interactive_command(
             ns = argparse.Namespace(
                 db=settings["db"],
                 output_dir=output_dir,
-                slug=settings["slug_filter"],
-                limit=None,
                 overwrite=settings["overwrite_covers"],
                 timeout=settings["timeout"],
                 max_retries=settings["max_retries"],
@@ -1264,8 +1186,6 @@ def _run_interactive_command(
         if cmd == "sync-slugs":
             ns = argparse.Namespace(
                 db=settings["db"],
-                limit_sitemaps=settings["limit_sitemaps"],
-                limit_slugs=settings["limit_slugs"],
                 timeout=settings["timeout"],
                 max_retries=settings["max_retries"],
                 backoff=settings["backoff"],
@@ -1281,8 +1201,6 @@ def _run_interactive_command(
             ns = argparse.Namespace(
                 db=settings["db"],
                 output=output,
-                slug=settings["slug_filter"],
-                include_raw_json=settings["include_raw_json"],
             )
             _run_with_captured_stdout(run_export_excel, ns, emit)
             return True
@@ -1298,7 +1216,7 @@ class _InteractiveLogHandler(logging.Handler):
     def __init__(self, emit: Callable[[str], None]) -> None:
         super().__init__()
         self._emit = emit
-        self.setFormatter(logging.Formatter(LOG_FORMAT))
+        self.setFormatter(_ProgressAwareFormatter(LOG_FORMAT))
 
     def emit(self, record: logging.LogRecord) -> None:
         try:

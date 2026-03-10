@@ -349,6 +349,17 @@ class SQLiteStorage:
         updated = len(rows) - inserted
         return len(rows), inserted, updated
 
+    def list_game_slugs(
+        self,
+    ) -> list[str]:
+        query = "SELECT slug FROM game_slugs"
+        query += " ORDER BY sitemap_url ASC, slug ASC"
+
+        with self._lock:
+            cursor = self.conn.execute(query)
+            rows = cursor.fetchall()
+        return [str(row[0]) for row in rows]
+
     def count_rows(self, table_name: str) -> int:
         with self._lock:
             cursor = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}")
@@ -356,26 +367,16 @@ class SQLiteStorage:
 
     def list_game_cover_urls(
         self,
-        *,
-        slug: str | None = None,
-        limit: int | None = None,
     ) -> list[tuple[str, str]]:
         query = """
             SELECT slug, cover_url
             FROM games
             WHERE cover_url IS NOT NULL AND TRIM(cover_url) != ''
         """
-        params: list[object] = []
-        if slug:
-            query += " AND slug = ?"
-            params.append(slug)
         query += " ORDER BY slug ASC"
-        if limit is not None:
-            query += " LIMIT ?"
-            params.append(limit)
 
         with self._lock:
-            cursor = self.conn.execute(query, tuple(params))
+            cursor = self.conn.execute(query)
             rows = cursor.fetchall()
         return [(str(row[0]), str(row[1])) for row in rows]
 

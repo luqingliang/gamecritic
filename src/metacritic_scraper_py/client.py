@@ -35,7 +35,6 @@ class MetacriticClientError(RuntimeError):
 class ReviewPage:
     items: list[dict]
     next_href: str | None
-    total_results: int
 
 
 @dataclass(frozen=True)
@@ -221,48 +220,14 @@ class MetacriticClient:
         except ValueError as exc:
             raise MetacriticClientError(f"invalid json from {response.url}") from exc
 
-    def get_robots_txt(self) -> str:
-        return self._get_text(f"{BASE_SITE_URL}/robots.txt")
-
-    def iter_game_sitemap_urls(self, *, limit_sitemaps: int | None = None) -> Iterator[str]:
+    def iter_game_sitemap_urls(self) -> Iterator[str]:
         xml_text = self._get_text(f"{BASE_SITE_URL}/games.xml")
         root = ET.fromstring(xml_text)
-        count = 0
         for node in root.findall(".//sm:sitemap/sm:loc", SITEMAP_NS):
             self._check_stopped()
             if not node.text:
                 continue
             yield node.text.strip()
-            count += 1
-            if limit_sitemaps and count >= limit_sitemaps:
-                break
-
-    def iter_game_slugs(
-        self,
-        *,
-        limit_sitemaps: int | None = None,
-        limit_slugs: int | None = None,
-    ) -> Iterator[str]:
-        for record in self.iter_game_slug_records(
-            limit_sitemaps=limit_sitemaps,
-            limit_slugs=limit_slugs,
-        ):
-            yield record.slug
-
-    def iter_game_slug_records(
-        self,
-        *,
-        limit_sitemaps: int | None = None,
-        limit_slugs: int | None = None,
-    ) -> Iterator[GameSlugRecord]:
-        yielded = 0
-        for sitemap_url in self.iter_game_sitemap_urls(limit_sitemaps=limit_sitemaps):
-            self._check_stopped()
-            for record in self.iter_game_slug_records_for_sitemap(sitemap_url):
-                yield record
-                yielded += 1
-                if limit_slugs and yielded >= limit_slugs:
-                    return
 
     def iter_game_slug_records_for_sitemap(self, sitemap_url: str) -> Iterator[GameSlugRecord]:
         self._check_stopped()
@@ -291,13 +256,9 @@ class MetacriticClient:
         }
         return self._get_json(url, params=params)
 
-    def fetch_game_page_html(self, slug: str) -> str:
-        return self._get_text(f"{BASE_SITE_URL}/game/{slug}/")
-
     def resolve_cover_url(
         self,
         *,
-        slug: str,
         product_payload: dict,
     ) -> str | None:
         bucket_path = cover_bucket_path_from_product(product_payload)
@@ -352,9 +313,8 @@ class MetacriticClient:
             }
         payload = self._get_json(url, params=params)
         items = payload.get("data", {}).get("items", [])
-        total_results = int(payload.get("data", {}).get("totalResults", 0))
         next_href = payload.get("links", {}).get("next", {}).get("href")
-        return ReviewPage(items=list(items), next_href=next_href, total_results=total_results)
+        return ReviewPage(items=list(items), next_href=next_href)
 
     def iter_reviews(
         self,
@@ -385,28 +345,3 @@ class MetacriticClient:
             if not page.next_href:
                 return
             offset += len(page.items)
-
-    def fetch_finder_page(
-        self,
-        *,
-        sort_by: str = "-releaseDate",
-        offset: int = 0,
-        limit: int = 24,
-        mco_type_id: int = 13,
-        platform_ids: list[int] | None = None,
-        genres: list[str] | None = None,
-    ) -> dict:
-        params: dict[str, str | int] = {
-            "mcoTypeId": mco_type_id,
-            "sortBy": sort_by,
-            "offset": offset,
-            "limit": limit,
-            "componentName": "finder-list",
-            "componentDisplayName": "Finder List",
-            "componentType": "ProductList",
-        }
-        if platform_ids:
-            params["platform"] = ",".join(str(v) for v in platform_ids)
-        if genres:
-            params["genres"] = ",".join(genres)
-        return self._get_json(f"{BASE_API_URL}/finder/metacritic/web", params=params)

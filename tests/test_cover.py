@@ -41,33 +41,7 @@ class CoverUrlHelpersTestCase(unittest.TestCase):
 
         client = MetacriticClient(delay_seconds=0)
         try:
-            url = client.resolve_cover_url(slug="demo", product_payload=payload)
-        finally:
-            client.close()
-
-        self.assertEqual(
-            url,
-            "https://www.metacritic.com/a/img/catalog/provider/7/2/7-1695949825.jpg",
-        )
-
-    def test_resolve_cover_url_does_not_fetch_game_page(self) -> None:
-        payload = {
-            "data": {
-                "item": {
-                    "images": [
-                        {"typeName": "cardImage", "bucketPath": "/provider/7/2/7-1695949825.jpg"},
-                    ]
-                }
-            }
-        }
-
-        client = MetacriticClient(delay_seconds=0)
-        try:
-            def _raise_if_called(_: str) -> str:
-                raise AssertionError("fetch_game_page_html should not be called")
-
-            client.fetch_game_page_html = _raise_if_called  # type: ignore[method-assign]
-            url = client.resolve_cover_url(slug="demo", product_payload=payload)
+            url = client.resolve_cover_url(product_payload=payload)
         finally:
             client.close()
 
@@ -80,7 +54,7 @@ class CoverUrlHelpersTestCase(unittest.TestCase):
         payload = {"data": {"item": {"images": []}}}
         client = MetacriticClient(delay_seconds=0)
         try:
-            url = client.resolve_cover_url(slug="demo", product_payload=payload)
+            url = client.resolve_cover_url(product_payload=payload)
         finally:
             client.close()
 

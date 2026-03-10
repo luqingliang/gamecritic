@@ -76,10 +76,17 @@ class ExporterTestCase(unittest.TestCase):
                 self.assertIn("Games", workbook.sheetnames)
                 self.assertIn("CriticReviews", workbook.sheetnames)
                 self.assertIn("UserReviews", workbook.sheetnames)
+                games_headers = next(workbook["Games"].iter_rows(min_row=1, max_row=1, values_only=True))
+                critic_headers = next(workbook["CriticReviews"].iter_rows(min_row=1, max_row=1, values_only=True))
+                user_headers = next(workbook["UserReviews"].iter_rows(min_row=1, max_row=1, values_only=True))
+                self.assertNotIn("product_json", games_headers)
+                self.assertNotIn("critic_summary_json", games_headers)
+                self.assertNotIn("user_summary_json", games_headers)
+                self.assertNotIn("review_json", critic_headers)
+                self.assertNotIn("review_json", user_headers)
             finally:
                 workbook.close()
 
 
 if __name__ == "__main__":
     unittest.main()
-

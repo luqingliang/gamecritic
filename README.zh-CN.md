@@ -7,7 +7,7 @@
 - 从官方游戏 sitemap 发现游戏
 - 从 Metacritic 后端 JSON 接口抓取游戏详情
 - 抓取媒体评分/用户评分评论分页数据
-- 使用 SQLite 持久化，支持增量抓取
+- 使用 SQLite 持久化抓取结果和同步检查点
 
 ## 功能特性
 
@@ -55,7 +55,7 @@ show-zh
 set db data/metacritic.db
 set concurrency 4
 crawl
-export-excel data/metacritic_export.xlsx
+export-excel data/excel/metacritic_export.xlsx
 exit
 ```
 
@@ -63,16 +63,11 @@ exit
 
 为了更利于上手，`crawl` 和交互模式默认使用“快速上手配置”：
 
-- `include_reviews = true`
+- `include_reviews = false`
 - `max_review_pages = 1`
-- `max_games = 50`
+- `concurrency = 4`
 
-这样首次运行就会包含评论数据，同时任务时长也有上限。
-如需覆盖默认值，可显式指定，例如：
-
-```bash
-metacritic-scraper crawl --max-games 200 --max-review-pages 3 --no-include-reviews
-```
+全量抓取现在默认会处理 `game_slugs` 表中的全部 slug。
 
 2) 抓取单个游戏：
 
@@ -80,64 +75,40 @@ metacritic-scraper crawl --max-games 200 --max-review-pages 3 --no-include-revie
 metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild --db data/metacritic.db --include-reviews --max-review-pages 2
 ```
 
-3) 从 sitemap 抓取（示例：前 50 个游戏）：
+3) 抓取 `game_slugs` 表中的全部 slug：
 
 ```bash
-metacritic-scraper crawl --max-games 50 --db data/metacritic.db --include-reviews --max-review-pages 1
+metacritic-scraper crawl --db data/metacritic.db --include-reviews --max-review-pages 1
 ```
 
 可选：在抓取游戏信息时同时下载封面图片实体（默认关闭）。
 
 ```bash
-metacritic-scraper crawl --max-games 50 --db data/metacritic.db --download-covers --covers-dir data/covers
+metacritic-scraper crawl --db data/metacritic.db --download-covers --covers-dir data/covers
 ```
 
 可选：开启并发抓取（例如 4 个 worker）。
 
 ```bash
-metacritic-scraper crawl --max-games 50 --concurrency 4 --db data/metacritic.db --include-reviews
+metacritic-scraper crawl --concurrency 4 --db data/metacritic.db --include-reviews
 ```
 
-4) 开启按日期增量抓取：
-
-```bash
-metacritic-scraper crawl --incremental-by-date --db data/metacritic.db --include-reviews --max-review-pages 1
-```
-
-5) 按指定日期进行增量抓取（覆盖检查点）：
-
-```bash
-metacritic-scraper crawl --incremental-by-date --since-date 2026-03-01 --lookback-days 2 --db data/metacritic.db
-```
-
-6) 将 sitemap 中的全部 slug 同步到 SQLite：
+4) 将 sitemap 中的全部 slug 同步到 SQLite：
 
 ```bash
 metacritic-scraper sync-slugs --db data/metacritic.db
 ```
 
-7) 基于已抓取游戏信息批量下载封面图片实体：
+5) 基于已抓取游戏信息批量下载封面图片实体：
 
 ```bash
 metacritic-scraper download-covers --db data/metacritic.db --output-dir data/covers
 ```
 
-可选：覆盖本地已有文件，或限制本次下载数量。
+6) 导出 SQLite 数据到 Excel：
 
 ```bash
-metacritic-scraper download-covers --db data/metacritic.db --overwrite --limit 200
-```
-
-8) 导出 SQLite 数据到 Excel：
-
-```bash
-metacritic-scraper export-excel --db data/metacritic.db --output data/metacritic_export.xlsx
-```
-
-可选：仅导出单个 slug，并包含原始 JSON 字段。
-
-```bash
-metacritic-scraper export-excel --db data/metacritic.db --slug the-legend-of-zelda-breath-of-the-wild --include-raw-json
+metacritic-scraper export-excel --db data/metacritic.db --output data/excel/metacritic_export.xlsx
 ```
 
 ## CLI 概览
@@ -152,14 +123,6 @@ metacritic-scraper export-excel --help
 metacritic-scraper interactive --help
 ```
 
-## 增量开关说明
-
-- 默认模式（`crawl` 不加开关）：走 sitemap 全量抓取。
-- 开启 `--incremental-by-date`：走 finder 接口并按 `releaseDate` 倒序抓取，遇到早于有效截止日期的数据会停止继续翻页。
-- 默认将检查点日期写入数据库键 `games_incremental_release_date`。
-- `--since-date YYYY-MM-DD` 可在单次运行中覆盖已保存检查点。
-- `--lookback-days` 会回抓安全窗口，降低漏抓晚到更新的风险。
-
 ## 数据表结构
 
 SQLite 表：
@@ -168,10 +131,13 @@ SQLite 表：
 - `game_slugs`
 - `critic_reviews`
 - `user_reviews`
+- `sync_state`
 
 每张表都保存关键规范化字段和原始 JSON（`*_json`），便于后续重放解析。
 其中 `games.cover_url` 用于保存封面图链接，直接由产品 `bucketPath` 组装为 catalog 原图地址（`/a/img/catalog/...`）。
 `game_slugs` 用于保存 sitemap slug 索引，并记录 `game_url`、`sitemap_url`、`discovered_at` 和 `last_seen_at`。
+`sync_state` 用于保存轻量级检查点，比如
+`game_slugs_last_successful_full_sync_at`。
 
 ## 许可证
 

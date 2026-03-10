@@ -7,7 +7,7 @@ Python crawler for Metacritic game data, focused on:
 - game discovery from the official games sitemap
 - game detail extraction from Metacritic backend JSON endpoints
 - critic/user reviews pagination
-- SQLite persistence for incremental crawling
+- SQLite persistence for crawled data and sync checkpoints
 
 ## Features
 
@@ -55,7 +55,7 @@ show-zh
 set db data/metacritic.db
 set concurrency 4
 crawl
-export-excel data/metacritic_export.xlsx
+export-excel data/excel/metacritic_export.xlsx
 exit
 ```
 
@@ -63,16 +63,11 @@ exit
 
 For easier out-of-box usage, `crawl` and interactive mode now use a quick-start profile by default:
 
-- `include_reviews = true`
+- `include_reviews = false`
 - `max_review_pages = 1`
-- `max_games = 50`
+- `concurrency = 4`
 
-This means your first run already contains review data but stays bounded in runtime.
-You can still override defaults, for example:
-
-```bash
-metacritic-scraper crawl --max-games 200 --max-review-pages 3 --no-include-reviews
-```
+Full crawl now processes all slugs stored in `game_slugs` by default.
 
 2) Crawl one game:
 
@@ -80,64 +75,40 @@ metacritic-scraper crawl --max-games 200 --max-review-pages 3 --no-include-revie
 metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild --db data/metacritic.db --include-reviews --max-review-pages 2
 ```
 
-3) Crawl from sitemap (example: first 50 games):
+3) Crawl all stored `game_slugs`:
 
 ```bash
-metacritic-scraper crawl --max-games 50 --db data/metacritic.db --include-reviews --max-review-pages 1
+metacritic-scraper crawl --db data/metacritic.db --include-reviews --max-review-pages 1
 ```
 
 Optional: download cover image files while crawling (disabled by default).
 
 ```bash
-metacritic-scraper crawl --max-games 50 --db data/metacritic.db --download-covers --covers-dir data/covers
+metacritic-scraper crawl --db data/metacritic.db --download-covers --covers-dir data/covers
 ```
 
 Optional: enable concurrent workers (for example 4 workers).
 
 ```bash
-metacritic-scraper crawl --max-games 50 --concurrency 4 --db data/metacritic.db --include-reviews
+metacritic-scraper crawl --concurrency 4 --db data/metacritic.db --include-reviews
 ```
 
-4) Crawl incrementally by release date (switch on):
-
-```bash
-metacritic-scraper crawl --incremental-by-date --db data/metacritic.db --include-reviews --max-review-pages 1
-```
-
-5) Crawl incrementally with explicit date override:
-
-```bash
-metacritic-scraper crawl --incremental-by-date --since-date 2026-03-01 --lookback-days 2 --db data/metacritic.db
-```
-
-6) Sync all sitemap slugs into SQLite:
+4) Sync all sitemap slugs into SQLite:
 
 ```bash
 metacritic-scraper sync-slugs --db data/metacritic.db
 ```
 
-7) Batch download cover image files from already crawled games:
+5) Batch download cover image files from already crawled games:
 
 ```bash
 metacritic-scraper download-covers --db data/metacritic.db --output-dir data/covers
 ```
 
-Optional: overwrite existing files or limit this run.
+6) Export SQLite data to Excel:
 
 ```bash
-metacritic-scraper download-covers --db data/metacritic.db --overwrite --limit 200
-```
-
-8) Export SQLite data to Excel:
-
-```bash
-metacritic-scraper export-excel --db data/metacritic.db --output data/metacritic_export.xlsx
-```
-
-Optional: export only one slug and include raw JSON columns.
-
-```bash
-metacritic-scraper export-excel --db data/metacritic.db --slug the-legend-of-zelda-breath-of-the-wild --include-raw-json
+metacritic-scraper export-excel --db data/metacritic.db --output data/excel/metacritic_export.xlsx
 ```
 
 ## CLI Overview
@@ -152,14 +123,6 @@ metacritic-scraper export-excel --help
 metacritic-scraper interactive --help
 ```
 
-## Incremental Toggle
-
-- Default (`crawl` without switch): full crawl from games sitemap.
-- With `--incremental-by-date`: use finder endpoint sorted by `releaseDate`, and stop when older than the effective cutoff date.
-- Checkpoint date is persisted in DB key `games_incremental_release_date` by default.
-- `--since-date YYYY-MM-DD` can override stored checkpoint for one run.
-- `--lookback-days` re-crawls a safety window to reduce missed late updates.
-
 ## Data Schema
 
 SQLite tables:
@@ -168,10 +131,13 @@ SQLite tables:
 - `game_slugs`
 - `critic_reviews`
 - `user_reviews`
+- `sync_state`
 
 Each table stores essential normalized fields and raw JSON payloads (`*_json`) for future reprocessing.
 `games.cover_url` stores the cover image URL built from product `bucketPath` (`/a/img/catalog/...`).
 `game_slugs` stores the current sitemap slug index with `game_url`, `sitemap_url`, `discovered_at`, and `last_seen_at`.
+`sync_state` stores lightweight checkpoints such as
+`game_slugs_last_successful_full_sync_at`.
 
 ## License
 

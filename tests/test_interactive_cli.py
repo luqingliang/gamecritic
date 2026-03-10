@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from metacritic_scraper_py.cli import (
-    DEFAULT_QUICKSTART_MAX_GAMES,
+    DEFAULT_CONCURRENCY,
     DEFAULT_QUICKSTART_MAX_REVIEW_PAGES,
     INTERACTIVE_COMPOSER_MAX_LINES,
     INTERACTIVE_COMPOSER_MIN_LINES,
@@ -92,10 +92,6 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_convert_setting_value_optional(self) -> None:
         self.assertEqual(_convert_setting_value("concurrency", "4"), 4)
         self.assertEqual(_convert_setting_value("delay", "0.5"), 0.5)
-        self.assertIsNone(_convert_setting_value("max_games", "none"))
-        self.assertEqual(_convert_setting_value("max_games", "12"), 12)
-        self.assertIsNone(_convert_setting_value("since_date", "none"))
-        self.assertEqual(_convert_setting_value("since_date", "2026-03-05"), "2026-03-05")
         self.assertTrue(_convert_setting_value("download_covers", "true"))
         self.assertFalse(_convert_setting_value("overwrite_covers", "false"))
         self.assertEqual(_convert_setting_value("covers_dir", "data/covers"), "data/covers")
@@ -103,9 +99,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_quickstart_defaults_for_crawl_parser(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["crawl"])
-        self.assertTrue(args.include_reviews)
+        self.assertFalse(args.include_reviews)
         self.assertEqual(args.max_review_pages, DEFAULT_QUICKSTART_MAX_REVIEW_PAGES)
-        self.assertEqual(args.max_games, DEFAULT_QUICKSTART_MAX_GAMES)
+        self.assertEqual(args.concurrency, DEFAULT_CONCURRENCY)
         self.assertFalse(args.download_covers)
         self.assertEqual(args.covers_dir, "data/covers")
         self.assertFalse(args.overwrite_covers)
@@ -117,27 +113,44 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
     def test_interactive_defaults_use_quickstart_profile(self) -> None:
         settings = _interactive_defaults()
-        self.assertTrue(settings["include_reviews"])
+        self.assertFalse(settings["include_reviews"])
         self.assertEqual(settings["max_review_pages"], DEFAULT_QUICKSTART_MAX_REVIEW_PAGES)
-        self.assertEqual(settings["max_games"], DEFAULT_QUICKSTART_MAX_GAMES)
+        self.assertEqual(settings["concurrency"], DEFAULT_CONCURRENCY)
         self.assertFalse(settings["download_covers"])
         self.assertEqual(settings["covers_dir"], "data/covers")
         self.assertFalse(settings["overwrite_covers"])
+        self.assertEqual(settings["export_output"], "data/excel/metacritic_export.xlsx")
+        self.assertNotIn("include_raw_json", settings)
+
+    def test_crawl_one_parser_defaults(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["crawl-one", "demo-game"])
+        self.assertFalse(args.include_reviews)
+        self.assertEqual(args.max_review_pages, DEFAULT_QUICKSTART_MAX_REVIEW_PAGES)
 
     def test_download_covers_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["download-covers"])
         self.assertEqual(args.db, "data/metacritic.db")
         self.assertEqual(args.output_dir, "data/covers")
-        self.assertIsNone(args.limit)
         self.assertFalse(args.overwrite)
+
+    def test_export_excel_parser_defaults(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["export-excel"])
+        self.assertEqual(args.db, "data/metacritic.db")
+        self.assertEqual(args.output, "data/excel/metacritic_export.xlsx")
+        self.assertFalse(hasattr(args, "include_raw_json"))
 
     def test_sync_slugs_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["sync-slugs"])
         self.assertEqual(args.db, "data/metacritic.db")
-        self.assertIsNone(args.limit_sitemaps)
-        self.assertIsNone(args.limit_slugs)
+        self.assertEqual(args.command, "sync-slugs")
+        self.assertEqual(
+            set(vars(args)),
+            {"verbose", "command", "db", "timeout", "max_retries", "backoff", "delay"},
+        )
 
     def test_help_zh_command(self) -> None:
         settings = _interactive_defaults()
@@ -174,7 +187,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertTrue(output)
-        self.assertIn("concurrency = 1", output[0])
+        self.assertIn("concurrency = 4", output[0])
         self.assertIn("并发抓取 worker 数量", output[0])
 
     def test_show_with_zh_argument(self) -> None:
@@ -194,7 +207,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertTrue(output)
-        self.assertIn("concurrency = 1", output[0])
+        self.assertIn("concurrency = 4", output[0])
         self.assertIn("Number of concurrent crawl workers", output[0])
 
     def test_config_alias_includes_english_explanations(self) -> None:
@@ -300,6 +313,40 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 130)
         self.assertIs(scraper_cls.call_args.kwargs["stop_event"], args.stop_event)
+        scraper.crawl_from_sitemaps.assert_called_once()
+        storage.close.assert_called_once()
+
+    def test_run_crawl_does_not_log_failed_slugs_at_end(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["crawl"])
+        args.print_summary = False
+        args.stop_event = threading.Event()
+
+        storage = MagicMock()
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = None
+        scraper = MagicMock()
+        scraper.crawl_from_sitemaps.return_value = CrawlResult(failed_slugs=["demo-a", "demo-b"])
+
+        with patch("metacritic_scraper_py.cli.SQLiteStorage", return_value=storage), patch(
+            "metacritic_scraper_py.cli._maybe_run_auto_sync_slugs_before_crawl",
+            return_value=None,
+        ), patch(
+            "metacritic_scraper_py.cli._build_client",
+            return_value=client,
+        ), patch("metacritic_scraper_py.cli.MetacriticScraper", return_value=scraper), self.assertLogs(
+            level="INFO"
+        ) as captured:
+            exit_code = run_crawl(args)
+
+        self.assertEqual(exit_code, 0)
+        messages = [record.getMessage() for record in captured.records]
+        self.assertIn(
+            "crawl finished games=0 critic_reviews=0 user_reviews=0 covers_downloaded=0 covers_skipped=0 covers_failed=0 failed=2",
+            messages,
+        )
+        self.assertFalse(any("failed slugs:" in message for message in messages))
         storage.close.assert_called_once()
 
     def test_run_download_covers_returns_130_when_fetch_is_interrupted(self) -> None:
@@ -351,6 +398,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             exit_code = run_sync_slugs(args)
 
         self.assertEqual(exit_code, 130)
+        storage.set_state.assert_not_called()
         storage.close.assert_called_once()
 
     def test_interactive_banner_lines(self) -> None:
@@ -484,31 +532,31 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         )
 
     def test_style_output_line_for_warning_log(self) -> None:
-        line = "● WARNING metacritic_scraper_py.scraper - failed slugs: demo"
+        line = "● WARNING - failed slugs: demo"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
             [
                 ("class:log.bullet", "● "),
-                ("class:log.warning", "WARNING metacritic_scraper_py.scraper - "),
+                ("class:log.warning", "WARNING - "),
                 ("", "failed slugs: demo"),
             ],
         )
 
     def test_style_output_line_for_error_log(self) -> None:
-        line = "● ERROR metacritic_scraper_py.scraper - request failed"
+        line = "● ERROR - request failed"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
             [
                 ("class:log.bullet", "● "),
-                ("class:log.error", "ERROR metacritic_scraper_py.scraper - "),
+                ("class:log.error", "ERROR - "),
                 ("", "request failed"),
             ],
         )
 
     def test_style_output_line_for_cover_download_log(self) -> None:
-        line = "● INFO metacritic_scraper_py.cli - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers"
+        line = "● INFO - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
@@ -516,8 +564,19 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 ("class:log.bullet", "● "),
                 (
                     "class:log.cover",
-                    "INFO metacritic_scraper_py.cli - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers",
+                    "INFO - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers",
                 ),
+            ],
+        )
+
+    def test_style_output_line_for_progress_log(self) -> None:
+        line = "● INFO 99/100 - completed slug=demo-game status=ok"
+        fragments = _style_output_line(line)
+        self.assertEqual(
+            fragments,
+            [
+                ("class:log.bullet", "● "),
+                ("", "INFO 99/100 - completed slug=demo-game status=ok"),
             ],
         )
 
@@ -536,7 +595,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         handler.emit(record)
 
-        self.assertEqual(output, [f"{LOG_BULLET} INFO metacritic_scraper_py.scraper - crawl started\n"])
+        self.assertEqual(output, [f"{LOG_BULLET} INFO - crawl started\n"])
 
     def test_style_output_line_for_non_settings(self) -> None:
         fragments = _style_output_line("Unknown command: clear. Type 'help' or 'help-zh' for available commands.")

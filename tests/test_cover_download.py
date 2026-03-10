@@ -105,7 +105,7 @@ class CoverImageDownloaderTestCase(unittest.TestCase):
 
 
 class CoverUrlStorageQueryTestCase(unittest.TestCase):
-    def test_list_game_cover_urls_supports_slug_and_limit(self) -> None:
+    def test_list_game_cover_urls_lists_all_cover_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -139,14 +139,6 @@ class CoverUrlStorageQueryTestCase(unittest.TestCase):
                         ("a-game", "https://www.metacritic.com/a/img/catalog/provider/1/1/a.jpg"),
                         ("b-game", "https://www.metacritic.com/a/img/catalog/provider/1/1/b.jpg"),
                     ],
-                )
-                self.assertEqual(
-                    storage.list_game_cover_urls(slug="b-game"),
-                    [("b-game", "https://www.metacritic.com/a/img/catalog/provider/1/1/b.jpg")],
-                )
-                self.assertEqual(
-                    storage.list_game_cover_urls(limit=1),
-                    [("a-game", "https://www.metacritic.com/a/img/catalog/provider/1/1/a.jpg")],
                 )
             finally:
                 storage.close()
