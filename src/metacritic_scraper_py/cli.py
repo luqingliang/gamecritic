@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import logging
 import os
 import re
@@ -9,7 +10,8 @@ import shlex
 import sqlite3
 import sys
 import threading
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence
 
@@ -30,17 +32,60 @@ DEFAULT_CONCURRENCY = 4
 DEFAULT_SLUG_SYNC_BATCH_SIZE = 500
 GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY = "game_slugs_last_successful_full_sync_at"
 GAME_SLUGS_FULL_SYNC_MAX_AGE = timedelta(days=7)
+SHARED_SETTINGS_PATH = "config/cli_settings.json"
 INTERACTIVE_WELCOME_CONTENT_WIDTH = 74
 INTERACTIVE_WELCOME_LABEL_WIDTH = 28
 INTERACTIVE_WELCOME_TITLE = "METACRITIC SCRAPER"
-INTERACTIVE_BACKGROUND_COMMANDS = {"crawl", "crawl-one", "sync-slugs", "download-covers", "export-excel", "clear-db"}
-INTERACTIVE_STOPPABLE_COMMANDS = {"crawl", "crawl-one", "sync-slugs", "download-covers"}
+INTERACTIVE_BACKGROUND_COMMANDS = {
+    "crawl",
+    "crawl-one",
+    "crawl-reviews",
+    "sync-slugs",
+    "download-covers",
+    "export-excel",
+    "clear-db",
+}
+INTERACTIVE_STOPPABLE_COMMANDS = {"crawl", "crawl-one", "crawl-reviews", "sync-slugs", "download-covers"}
 LOG_BULLET = "●"
-LOG_FORMAT = f"{LOG_BULLET} %(levelname)s%(progress_display)s - %(message)s"
+LOG_FORMAT = f"{LOG_BULLET} %(log_header)s%(progress_display)s - %(message)s"
+_LOG_COMMAND_CONTEXT: ContextVar[str] = ContextVar("log_command_context", default="command")
+_BOOL_SETTING_KEYS = {"include_critic_reviews", "include_user_reviews", "download_covers", "overwrite_covers"}
+_INT_SETTING_KEYS = {"review_page_size", "concurrency", "max_retries"}
+_FLOAT_SETTING_KEYS = {"timeout", "backoff", "delay"}
+_OPTIONAL_INT_SETTING_KEYS = {"max_review_pages"}
+_STRING_SETTING_KEYS = {"db", "export_output", "covers_dir"}
+
+
+def _current_log_command_name() -> str:
+    current = str(_LOG_COMMAND_CONTEXT.get() or "").strip().lower()
+    return current or "command"
+
+
+def _normalize_log_command_name(command: object | None) -> str:
+    normalized = str(command or "").strip().lower()
+    return normalized or _current_log_command_name()
+
+
+def _format_log_header(command_name: str, level_name: str) -> str:
+    normalized_level = str(level_name or "INFO").upper()
+    if normalized_level == "INFO":
+        return command_name
+    return f"{command_name}-{normalized_level}"
+
+
+@contextmanager
+def _logging_command_context(command: object | None):
+    token = _LOG_COMMAND_CONTEXT.set(_normalize_log_command_name(command))
+    try:
+        yield
+    finally:
+        _LOG_COMMAND_CONTEXT.reset(token)
 
 
 class _ProgressAwareFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
+        command_name = _normalize_log_command_name(getattr(record, "command_name", None))
+        record.log_header = _format_log_header(command_name, record.levelname)
         progress = str(getattr(record, "progress", "") or "").strip()
         record.progress_display = f" {progress}" if progress else ""
         return super().format(record)
@@ -55,146 +100,35 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
-    crawl = subparsers.add_parser("crawl", help="Crawl games using slugs stored in SQLite.")
-    crawl.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    crawl.add_argument(
-        "--include-critic-reviews",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Also crawl critic reviews (default: false).",
+    subparsers.add_parser(
+        "crawl",
+        help="Crawl games using the shared settings profile.",
     )
-    crawl.add_argument(
-        "--include-user-reviews",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Also crawl user reviews (default: false).",
+    crawl_one = subparsers.add_parser(
+        "crawl-one",
+        help="Crawl one game by slug using the shared settings profile.",
     )
-    crawl.add_argument("--review-page-size", type=int, default=50, help="Reviews page size.")
-    crawl.add_argument(
-        "--max-review-pages",
-        type=int,
-        default=DEFAULT_QUICKSTART_MAX_REVIEW_PAGES,
-        help=f"Limit review pages per type (default: {DEFAULT_QUICKSTART_MAX_REVIEW_PAGES}).",
-    )
-    crawl.add_argument(
-        "--concurrency",
-        type=int,
-        default=DEFAULT_CONCURRENCY,
-        help=f"Optional concurrent slug workers (default: {DEFAULT_CONCURRENCY}).",
-    )
-    crawl.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
-    crawl.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Retry attempts.")
-    crawl.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF_SECONDS, help="Retry backoff base seconds.")
-    crawl.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS, help="Sleep between requests.")
-    crawl.add_argument(
-        "--download-covers",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Download cover image files while crawling games (default: false).",
-    )
-    crawl.add_argument(
-        "--covers-dir",
-        default="data/covers",
-        help="Output directory for downloaded cover image files.",
-    )
-    crawl.add_argument(
-        "--overwrite-covers",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Overwrite existing cover files when downloading (default: false).",
-    )
-
-    crawl_one = subparsers.add_parser("crawl-one", help="Crawl one game by slug.")
     crawl_one.add_argument("slug", help="Game slug.")
-    crawl_one.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    crawl_one.add_argument(
-        "--include-critic-reviews",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Also crawl critic reviews (default: false).",
+    subparsers.add_parser(
+        "crawl-reviews",
+        help="Backfill critic and user reviews using the shared settings profile.",
     )
-    crawl_one.add_argument(
-        "--include-user-reviews",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Also crawl user reviews (default: false).",
-    )
-    crawl_one.add_argument("--review-page-size", type=int, default=50, help="Reviews page size.")
-    crawl_one.add_argument(
-        "--max-review-pages",
-        type=int,
-        default=DEFAULT_QUICKSTART_MAX_REVIEW_PAGES,
-        help=f"Limit review pages per type (default: {DEFAULT_QUICKSTART_MAX_REVIEW_PAGES}).",
-    )
-    crawl_one.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
-    crawl_one.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Retry attempts.")
-    crawl_one.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF_SECONDS, help="Retry backoff base seconds.")
-    crawl_one.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS, help="Sleep between requests.")
-    crawl_one.add_argument(
-        "--download-covers",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Download cover image files while crawling this game (default: false).",
-    )
-    crawl_one.add_argument(
-        "--covers-dir",
-        default="data/covers",
-        help="Output directory for downloaded cover image files.",
-    )
-    crawl_one.add_argument(
-        "--overwrite-covers",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Overwrite existing cover files when downloading (default: false).",
-    )
-
-    sync_slugs = subparsers.add_parser(
+    subparsers.add_parser(
         "sync-slugs",
-        help="Sync game slugs from games sitemap into SQLite.",
+        help="Sync game slugs using the shared settings profile.",
     )
-    sync_slugs.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    sync_slugs.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
-    sync_slugs.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Retry attempts.")
-    sync_slugs.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF_SECONDS, help="Retry backoff base seconds.")
-    sync_slugs.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS, help="Sleep between requests.")
-
-    export_excel = subparsers.add_parser(
+    subparsers.add_parser(
         "export-excel",
-        help="Export crawled SQLite data to an Excel file.",
+        help="Export crawled SQLite data using the shared settings profile.",
     )
-    export_excel.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    export_excel.add_argument(
-        "--output",
-        default="data/excel/metacritic_export.xlsx",
-        help="Output Excel file path.",
-    )
-
-    download_covers = subparsers.add_parser(
+    subparsers.add_parser(
         "download-covers",
-        help="Download cover image files from existing games in SQLite.",
+        help="Download cover image files using the shared settings profile.",
     )
-    download_covers.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
-    download_covers.add_argument(
-        "--output-dir",
-        default="data/covers",
-        help="Output directory for downloaded cover image files.",
-    )
-    download_covers.add_argument(
-        "--overwrite",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Overwrite existing cover files (default: false).",
-    )
-    download_covers.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout seconds.")
-    download_covers.add_argument("--max-retries", type=int, default=DEFAULT_MAX_RETRIES, help="Retry attempts.")
-    download_covers.add_argument("--backoff", type=float, default=DEFAULT_BACKOFF_SECONDS, help="Retry backoff base seconds.")
-    download_covers.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS, help="Sleep between requests.")
-
-    clear_db = subparsers.add_parser(
+    subparsers.add_parser(
         "clear-db",
         help="Delete all rows from all project SQLite tables while keeping the schema.",
     )
-    clear_db.add_argument("--db", default="data/metacritic.db", help="SQLite db path.")
 
     subparsers.add_parser(
         "interactive",
@@ -237,6 +171,18 @@ def _build_client(args: argparse.Namespace) -> MetacriticClient:
         delay_seconds=args.delay,
         stop_event=_get_stop_event(args),
     )
+
+
+def _resolve_review_selection(
+    args: argparse.Namespace,
+    *,
+    default_to_both: bool = False,
+) -> tuple[bool, bool]:
+    include_critic_reviews = bool(getattr(args, "include_critic_reviews", False))
+    include_user_reviews = bool(getattr(args, "include_user_reviews", False))
+    if default_to_both and not include_critic_reviews and not include_user_reviews:
+        return True, True
+    return include_critic_reviews, include_user_reviews
 
 
 def _parse_checkpoint_datetime(value: object) -> datetime | None:
@@ -305,7 +251,8 @@ def _maybe_run_auto_sync_slugs_before_crawl(args: argparse.Namespace, storage: S
         return None
 
     logging.info("auto sync-slugs before crawl db=%s", args.db)
-    exit_code = run_sync_slugs(_build_auto_sync_slugs_args(args))
+    with _logging_command_context("sync-slugs"):
+        exit_code = run_sync_slugs(_build_auto_sync_slugs_args(args))
     if exit_code != 0:
         logging.warning("sync-slugs before crawl exited with code=%d; crawl aborted", exit_code)
         return exit_code
@@ -319,6 +266,7 @@ def run_crawl(args: argparse.Namespace) -> int:
     covers_dir = str(getattr(args, "covers_dir", "data/covers"))
     overwrite_covers = bool(getattr(args, "overwrite_covers", False))
     stop_event = _get_stop_event(args)
+    include_critic_reviews, include_user_reviews = _resolve_review_selection(args)
 
     storage = SQLiteStorage(args.db)
     try:
@@ -329,8 +277,8 @@ def run_crawl(args: argparse.Namespace) -> int:
         with _build_client(args) as client:
             scraper = MetacriticScraper(client, storage, stop_event=stop_event)
             result = scraper.crawl_from_sitemaps(
-                include_critic_reviews=bool(getattr(args, "include_critic_reviews", False)),
-                include_user_reviews=bool(getattr(args, "include_user_reviews", False)),
+                include_critic_reviews=include_critic_reviews,
+                include_user_reviews=include_user_reviews,
                 review_page_size=args.review_page_size,
                 max_review_pages=args.max_review_pages,
                 concurrency=args.concurrency,
@@ -381,6 +329,7 @@ def run_crawl_one(args: argparse.Namespace) -> int:
     covers_dir = str(getattr(args, "covers_dir", "data/covers"))
     overwrite_covers = bool(getattr(args, "overwrite_covers", False))
     stop_event = _get_stop_event(args)
+    include_critic_reviews, include_user_reviews = _resolve_review_selection(args)
 
     storage = SQLiteStorage(args.db)
     try:
@@ -397,8 +346,8 @@ def run_crawl_one(args: argparse.Namespace) -> int:
             )
             result = scraper.crawl_slug(
                 args.slug,
-                include_critic_reviews=bool(getattr(args, "include_critic_reviews", False)),
-                include_user_reviews=bool(getattr(args, "include_user_reviews", False)),
+                include_critic_reviews=include_critic_reviews,
+                include_user_reviews=include_user_reviews,
                 review_page_size=args.review_page_size,
                 max_review_pages=args.max_review_pages,
                 cover_downloader=cover_downloader,
@@ -439,6 +388,52 @@ def run_crawl_one(args: argparse.Namespace) -> int:
         if result.stopped:
             return 130
         return 0 if not result.failed_slugs else 2
+    finally:
+        storage.close()
+
+
+def run_crawl_reviews(args: argparse.Namespace) -> int:
+    if args.concurrency < 1:
+        raise SystemExit("--concurrency must be >= 1")
+    stop_event = _get_stop_event(args)
+    include_critic_reviews, include_user_reviews = _resolve_review_selection(
+        args,
+        default_to_both=bool(getattr(args, "default_to_both_reviews", False)),
+    )
+
+    storage = SQLiteStorage(args.db)
+    try:
+        with _build_client(args) as client:
+            scraper = MetacriticScraper(client, storage, stop_event=stop_event)
+            result = scraper.crawl_reviews_from_games(
+                include_critic_reviews=include_critic_reviews,
+                include_user_reviews=include_user_reviews,
+                review_page_size=args.review_page_size,
+                max_review_pages=args.max_review_pages,
+                concurrency=args.concurrency,
+            )
+        logging.info(
+            "crawl-reviews %s processed=%d critic_reviews=%d user_reviews=%d failed=%d",
+            "stopped" if result.stopped else "finished",
+            result.slugs_processed,
+            result.critic_reviews_saved,
+            result.user_reviews_saved,
+            len(result.failed_slugs),
+        )
+        if bool(getattr(args, "print_summary", False)):
+            summary = (
+                "crawl-reviews summary: processed=%d critic_reviews=%d user_reviews=%d failed=%d"
+                % (
+                    result.slugs_processed,
+                    result.critic_reviews_saved,
+                    result.user_reviews_saved,
+                    len(result.failed_slugs),
+                )
+            )
+            if result.stopped:
+                summary = f"{summary} stopped=1"
+            print(summary)
+        return 130 if result.stopped else 0
     finally:
         storage.close()
 
@@ -731,6 +726,204 @@ def _interactive_defaults() -> dict[str, object]:
     }
 
 
+def _coerce_loaded_setting_value(key: str, value: object) -> object:
+    if key in _BOOL_SETTING_KEYS:
+        if isinstance(value, bool):
+            return value
+        raise ValueError(f"invalid boolean setting: {key}")
+    if key in _INT_SETTING_KEYS:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        raise ValueError(f"invalid integer setting: {key}")
+    if key in _FLOAT_SETTING_KEYS:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        raise ValueError(f"invalid float setting: {key}")
+    if key in _OPTIONAL_INT_SETTING_KEYS:
+        if value is None:
+            return None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        raise ValueError(f"invalid optional integer setting: {key}")
+    if key in _STRING_SETTING_KEYS:
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"invalid string setting: {key}")
+    raise KeyError(f"unknown setting key: {key}")
+
+
+def _load_shared_settings() -> dict[str, object]:
+    settings = _interactive_defaults()
+    if not os.path.isfile(SHARED_SETTINGS_PATH):
+        return settings
+
+    try:
+        with open(SHARED_SETTINGS_PATH, "r", encoding="utf-8") as fp:
+            raw_settings = json.load(fp)
+    except (OSError, ValueError, TypeError):
+        return settings
+
+    if not isinstance(raw_settings, dict):
+        return settings
+
+    for key, value in raw_settings.items():
+        if key not in settings:
+            continue
+        try:
+            settings[key] = _coerce_loaded_setting_value(str(key), value)
+        except (KeyError, ValueError):
+            continue
+    return settings
+
+
+def _save_shared_settings(settings: dict[str, object]) -> None:
+    directory = os.path.dirname(SHARED_SETTINGS_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(SHARED_SETTINGS_PATH, "w", encoding="utf-8") as fp:
+        json.dump(settings, fp, ensure_ascii=True, indent=2, sort_keys=True)
+        fp.write("\n")
+
+
+def _build_crawl_namespace(
+    settings: dict[str, object],
+    *,
+    print_summary: bool = False,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="crawl",
+        db=str(settings["db"]),
+        include_critic_reviews=bool(settings["include_critic_reviews"]),
+        include_user_reviews=bool(settings["include_user_reviews"]),
+        review_page_size=int(settings["review_page_size"]),
+        max_review_pages=settings["max_review_pages"],
+        concurrency=int(settings["concurrency"]),
+        timeout=float(settings["timeout"]),
+        max_retries=int(settings["max_retries"]),
+        backoff=float(settings["backoff"]),
+        delay=float(settings["delay"]),
+        download_covers=bool(settings["download_covers"]),
+        covers_dir=str(settings["covers_dir"]),
+        overwrite_covers=bool(settings["overwrite_covers"]),
+        print_summary=print_summary,
+        stop_event=stop_event,
+    )
+
+
+def _build_crawl_one_namespace(
+    settings: dict[str, object],
+    *,
+    slug: str,
+    print_summary: bool = False,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="crawl-one",
+        slug=slug,
+        db=str(settings["db"]),
+        include_critic_reviews=bool(settings["include_critic_reviews"]),
+        include_user_reviews=bool(settings["include_user_reviews"]),
+        review_page_size=int(settings["review_page_size"]),
+        max_review_pages=settings["max_review_pages"],
+        timeout=float(settings["timeout"]),
+        max_retries=int(settings["max_retries"]),
+        backoff=float(settings["backoff"]),
+        delay=float(settings["delay"]),
+        download_covers=bool(settings["download_covers"]),
+        covers_dir=str(settings["covers_dir"]),
+        overwrite_covers=bool(settings["overwrite_covers"]),
+        print_summary=print_summary,
+        stop_event=stop_event,
+    )
+
+
+def _build_crawl_reviews_namespace(
+    settings: dict[str, object],
+    *,
+    print_summary: bool = False,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="crawl-reviews",
+        db=str(settings["db"]),
+        include_critic_reviews=True,
+        include_user_reviews=True,
+        review_page_size=int(settings["review_page_size"]),
+        max_review_pages=settings["max_review_pages"],
+        concurrency=int(settings["concurrency"]),
+        timeout=float(settings["timeout"]),
+        max_retries=int(settings["max_retries"]),
+        backoff=float(settings["backoff"]),
+        delay=float(settings["delay"]),
+        print_summary=print_summary,
+        stop_event=stop_event,
+    )
+
+
+def _build_sync_slugs_namespace(
+    settings: dict[str, object],
+    *,
+    print_summary: bool = False,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="sync-slugs",
+        db=str(settings["db"]),
+        timeout=float(settings["timeout"]),
+        max_retries=int(settings["max_retries"]),
+        backoff=float(settings["backoff"]),
+        delay=float(settings["delay"]),
+        print_summary=print_summary,
+        stop_event=stop_event,
+    )
+
+
+def _build_export_excel_namespace(
+    settings: dict[str, object],
+    *,
+    output: str | None = None,
+) -> argparse.Namespace:
+    resolved_output = output if output is not None else str(settings["export_output"])
+    return argparse.Namespace(
+        command="export-excel",
+        db=str(settings["db"]),
+        output=resolved_output,
+    )
+
+
+def _build_download_covers_namespace(
+    settings: dict[str, object],
+    *,
+    output_dir: str | None = None,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    resolved_output_dir = output_dir if output_dir is not None else str(settings["covers_dir"])
+    return argparse.Namespace(
+        command="download-covers",
+        db=str(settings["db"]),
+        output_dir=resolved_output_dir,
+        overwrite=bool(settings["overwrite_covers"]),
+        timeout=float(settings["timeout"]),
+        max_retries=int(settings["max_retries"]),
+        backoff=float(settings["backoff"]),
+        delay=float(settings["delay"]),
+        stop_event=stop_event,
+    )
+
+
+def _build_clear_db_namespace(
+    settings: dict[str, object],
+    *,
+    print_summary: bool = False,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="clear-db",
+        db=str(settings["db"]),
+        print_summary=print_summary,
+    )
+
+
 def _parse_bool(raw: str) -> bool:
     normalized = raw.strip().lower()
     if normalized in {"1", "true", "yes", "y", "on"}:
@@ -741,25 +934,16 @@ def _parse_bool(raw: str) -> bool:
 
 
 def _convert_setting_value(key: str, raw_value: str) -> object:
-    bool_keys = {"include_critic_reviews", "include_user_reviews", "download_covers", "overwrite_covers"}
-    int_keys = {
-        "review_page_size",
-        "concurrency",
-        "max_retries",
-    }
-    float_keys = {"timeout", "backoff", "delay"}
-    optional_int_keys = {"max_review_pages"}
-
     value = raw_value.strip()
-    if key in bool_keys:
+    if key in _BOOL_SETTING_KEYS:
         return _parse_bool(value)
-    if key in int_keys:
+    if key in _INT_SETTING_KEYS:
         return int(value)
-    if key in float_keys:
+    if key in _FLOAT_SETTING_KEYS:
         return float(value)
-    if key in optional_int_keys:
+    if key in _OPTIONAL_INT_SETTING_KEYS:
         return None if value.lower() in {"none", "null", ""} else int(value)
-    if key in {"db", "export_output", "covers_dir"}:
+    if key in _STRING_SETTING_KEYS:
         return value
     raise KeyError(f"unknown setting key: {key}")
 
@@ -775,6 +959,7 @@ def _print_interactive_help() -> str:
         "  stop                              Request stop for the current background crawl/download task",
         "  crawl                             Run crawl with current settings",
         "  crawl-one <slug>                  Crawl one game with current settings",
+        "  crawl-reviews                     Backfill both critic and user reviews for games in SQLite",
         "  download-covers [output_dir]      Download cover image files from DB",
         "  sync-slugs                        Sync sitemap slugs into SQLite",
         "  export-excel [output_path]        Export DB data to Excel",
@@ -782,11 +967,10 @@ def _print_interactive_help() -> str:
         "",
         "Examples:",
         "  set db data/metacritic.db",
-        "  set include_critic_reviews true",
-        "  set include_user_reviews true",
         "  set concurrency 4",
         "  set download_covers true",
         "  crawl",
+        "  crawl-reviews",
         "  sync-slugs",
         "  download-covers",
         "  crawl-one the-legend-of-zelda-breath-of-the-wild",
@@ -805,6 +989,7 @@ def _print_interactive_help_zh() -> str:
         "  stop                              请求停止当前后台抓取/下载任务",
         "  crawl                             用当前配置执行批量抓取",
         "  crawl-one <slug>                  抓取单个游戏",
+        "  crawl-reviews                     为 SQLite 中已有游戏补抓媒体和用户评论",
         "  download-covers [output_dir]      基于已抓取数据下载封面图片实体",
         "  sync-slugs                        将 sitemap 中的 slug 同步到 SQLite",
         "  export-excel [output_path]        导出 SQLite 数据到 Excel",
@@ -812,10 +997,9 @@ def _print_interactive_help_zh() -> str:
         "",
         "示例:",
         "  help-zh",
-        "  set include_critic_reviews true",
-        "  set include_user_reviews true",
         "  set concurrency 4",
         "  crawl",
+        "  crawl-reviews",
         "  sync-slugs",
         "  download-covers",
         "  export-excel data/excel/metacritic_export.xlsx",
@@ -832,8 +1016,8 @@ def _setting_explanations_en() -> dict[str, str]:
         "delay": "Fixed delay in seconds between requests",
         "download_covers": "Whether to download cover image files during crawl",
         "export_output": "Default output path for Excel export",
-        "include_critic_reviews": "Whether to crawl critic reviews",
-        "include_user_reviews": "Whether to crawl user reviews",
+        "include_critic_reviews": "Whether to also crawl critic reviews while fetching game data",
+        "include_user_reviews": "Whether to also crawl user reviews while fetching game data",
         "max_retries": "Maximum retry attempts for failed requests",
         "max_review_pages": "Maximum review pages per review type",
         "overwrite_covers": "Whether to overwrite existing cover image files",
@@ -859,8 +1043,8 @@ def _setting_explanations_zh() -> dict[str, str]:
         "delay": "每次请求之间的固定等待秒数",
         "download_covers": "抓取游戏时是否同时下载封面图片实体",
         "export_output": "导出 Excel 的默认输出路径",
-        "include_critic_reviews": "是否抓取媒体评论",
-        "include_user_reviews": "是否抓取用户评论",
+        "include_critic_reviews": "抓取游戏数据时是否同时抓取媒体评论",
+        "include_user_reviews": "抓取游戏数据时是否同时抓取用户评论",
         "max_retries": "请求失败后的最大重试次数",
         "max_review_pages": "每类评论最多翻页数",
         "overwrite_covers": "下载封面时是否覆盖本地已有文件",
@@ -908,14 +1092,21 @@ def _style_output_line(line: str) -> list[tuple[str, str]]:
                 return fragments
 
     log_match = re.match(
-        rf"^(?P<bullet>{re.escape(LOG_BULLET)}\s+)?(?P<header>(?:(?:\S+\s+\S+\s+))?(?P<level>DEBUG|INFO|WARNING|ERROR|CRITICAL)(?:\s+(?!-)\S+)?\s+-\s+)(?P<message>.*)$",
+        rf"^(?P<bullet>{re.escape(LOG_BULLET)}\s+)?(?P<header>(?P<label>\S+)(?:\s+(?P<progress>\S+))?)\s+-\s+(?P<message>.*)$",
         line,
     )
     if log_match:
         bullet = log_match.group("bullet") or ""
-        level = log_match.group("level")
-        header = log_match.group("header")
+        label = log_match.group("label") or ""
+        header = f"{log_match.group('header')} - "
         message = log_match.group("message")
+        level = None
+        if label in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            level = label
+        else:
+            suffix_match = re.match(r"^.+-(DEBUG|INFO|WARNING|ERROR|CRITICAL)$", label)
+            if suffix_match:
+                level = suffix_match.group(1)
         fragments: list[tuple[str, str]] = []
         if bullet:
             fragments.append(("class:log.bullet", bullet))
@@ -975,6 +1166,7 @@ def _interactive_welcome_rows() -> list[tuple[str, str, str | None]]:
         ("item", "stop", "Request stop for the current background crawl/download task"),
         ("item", "crawl", "Run a crawl with the current settings"),
         ("item", "crawl-one <slug>", "Fetch one game immediately"),
+        ("item", "crawl-reviews", "Backfill reviews for games already stored in SQLite"),
         ("blank", "", None),
         ("section", "Input Tips", None),
         ("item", "Enter", "Submit the current command"),
@@ -1178,9 +1370,10 @@ def _run_with_captured_stdout(
                 self._pending = ""
 
     stream = _StreamingStdout(emit)
-    with redirect_stdout(stream):
-        exit_code = func(namespace)
-        stream.flush()
+    with _logging_command_context(getattr(namespace, "command", None)):
+        with redirect_stdout(stream):
+            exit_code = func(namespace)
+            stream.flush()
     emit(f"[done] exit_code={exit_code}")
 
 
@@ -1223,6 +1416,11 @@ def _run_interactive_command(
     if cmd == "reset":
         settings.clear()
         settings.update(_interactive_defaults())
+        try:
+            _save_shared_settings(settings)
+        except OSError as exc:
+            emit(f"Settings reset, but failed to save shared settings: {exc}")
+            return True
         _refresh_status_if_needed()
         emit("Settings reset.")
         return True
@@ -1230,10 +1428,7 @@ def _run_interactive_command(
         if args:
             emit("Usage: clear-db")
             return True
-        ns = argparse.Namespace(
-            db=settings["db"],
-            print_summary=True,
-        )
+        ns = _build_clear_db_namespace(settings, print_summary=True)
         try:
             _run_with_captured_stdout(run_clear_db, ns, emit)
         finally:
@@ -1261,6 +1456,11 @@ def _run_interactive_command(
             emit(f"Cannot set value: {exc}")
             return True
         settings[key] = value
+        try:
+            _save_shared_settings(settings)
+        except OSError as exc:
+            emit(f"Updated in memory only: {key}={value} (save failed: {exc})")
+            return True
         if key == "db":
             _refresh_status_if_needed()
         emit(f"Updated: {key}={value}")
@@ -1268,23 +1468,7 @@ def _run_interactive_command(
 
     try:
         if cmd == "crawl":
-            ns = argparse.Namespace(
-                db=settings["db"],
-                include_critic_reviews=settings["include_critic_reviews"],
-                include_user_reviews=settings["include_user_reviews"],
-                review_page_size=settings["review_page_size"],
-                max_review_pages=settings["max_review_pages"],
-                concurrency=settings["concurrency"],
-                timeout=settings["timeout"],
-                max_retries=settings["max_retries"],
-                backoff=settings["backoff"],
-                delay=settings["delay"],
-                download_covers=settings["download_covers"],
-                covers_dir=settings["covers_dir"],
-                overwrite_covers=settings["overwrite_covers"],
-                print_summary=True,
-                stop_event=stop_event,
-            )
+            ns = _build_crawl_namespace(settings, print_summary=True, stop_event=stop_event)
             try:
                 _run_with_captured_stdout(run_crawl, ns, emit)
             finally:
@@ -1296,51 +1480,23 @@ def _run_interactive_command(
                 emit("Usage: crawl-one <slug>")
                 return True
             slug = args[0]
-            ns = argparse.Namespace(
-                slug=slug,
-                db=settings["db"],
-                include_critic_reviews=settings["include_critic_reviews"],
-                include_user_reviews=settings["include_user_reviews"],
-                review_page_size=settings["review_page_size"],
-                max_review_pages=settings["max_review_pages"],
-                timeout=settings["timeout"],
-                max_retries=settings["max_retries"],
-                backoff=settings["backoff"],
-                delay=settings["delay"],
-                download_covers=settings["download_covers"],
-                covers_dir=settings["covers_dir"],
-                overwrite_covers=settings["overwrite_covers"],
-                print_summary=True,
-                stop_event=stop_event,
-            )
+            ns = _build_crawl_one_namespace(settings, slug=slug, print_summary=True, stop_event=stop_event)
             _run_with_captured_stdout(run_crawl_one, ns, emit)
+            return True
+
+        if cmd == "crawl-reviews":
+            ns = _build_crawl_reviews_namespace(settings, print_summary=True, stop_event=stop_event)
+            _run_with_captured_stdout(run_crawl_reviews, ns, emit)
             return True
 
         if cmd == "download-covers":
             output_dir = args[0] if args else settings["covers_dir"]
-            ns = argparse.Namespace(
-                db=settings["db"],
-                output_dir=output_dir,
-                overwrite=settings["overwrite_covers"],
-                timeout=settings["timeout"],
-                max_retries=settings["max_retries"],
-                backoff=settings["backoff"],
-                delay=settings["delay"],
-                stop_event=stop_event,
-            )
+            ns = _build_download_covers_namespace(settings, output_dir=str(output_dir), stop_event=stop_event)
             _run_with_captured_stdout(run_download_covers, ns, emit)
             return True
 
         if cmd == "sync-slugs":
-            ns = argparse.Namespace(
-                db=settings["db"],
-                timeout=settings["timeout"],
-                max_retries=settings["max_retries"],
-                backoff=settings["backoff"],
-                delay=settings["delay"],
-                print_summary=True,
-                stop_event=stop_event,
-            )
+            ns = _build_sync_slugs_namespace(settings, print_summary=True, stop_event=stop_event)
             try:
                 _run_with_captured_stdout(run_sync_slugs, ns, emit)
             finally:
@@ -1349,10 +1505,7 @@ def _run_interactive_command(
 
         if cmd == "export-excel":
             output = args[0] if args else settings["export_output"]
-            ns = argparse.Namespace(
-                db=settings["db"],
-                output=output,
-            )
+            ns = _build_export_excel_namespace(settings, output=str(output))
             _run_with_captured_stdout(run_export_excel, ns, emit)
             return True
 
@@ -1397,7 +1550,7 @@ def _run_interactive_plain(settings: dict[str, object]) -> int:
 
 
 def run_interactive() -> int:
-    settings = _interactive_defaults()
+    settings = _load_shared_settings()
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return _run_interactive_plain(settings)
 
@@ -1530,7 +1683,13 @@ def run_interactive() -> int:
                 running_command["name"] = None
 
         running_command["name"] = command_name
-        worker = threading.Thread(target=_worker, name=f"interactive-{command_name}", daemon=True)
+        worker_context = copy_context()
+        worker = threading.Thread(
+            target=worker_context.run,
+            args=(_worker,),
+            name=f"interactive-{command_name}",
+            daemon=True,
+        )
         running_command["thread"] = worker
         emit_output(f"[running] {command_name} (prompt remains responsive)")
         worker.start()
@@ -1628,20 +1787,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_logging(args.verbose)
+    settings = _load_shared_settings()
 
     if args.command is None or args.command == "interactive":
-        return run_interactive()
+        with _logging_command_context("interactive"):
+            return run_interactive()
     if args.command == "crawl":
-        return run_crawl(args)
+        with _logging_command_context(args.command):
+            return run_crawl(_build_crawl_namespace(settings))
     if args.command == "crawl-one":
-        return run_crawl_one(args)
+        with _logging_command_context(args.command):
+            return run_crawl_one(_build_crawl_one_namespace(settings, slug=args.slug))
+    if args.command == "crawl-reviews":
+        with _logging_command_context(args.command):
+            return run_crawl_reviews(_build_crawl_reviews_namespace(settings))
     if args.command == "sync-slugs":
-        return run_sync_slugs(args)
+        with _logging_command_context(args.command):
+            return run_sync_slugs(_build_sync_slugs_namespace(settings))
     if args.command == "export-excel":
-        return run_export_excel(args)
+        with _logging_command_context(args.command):
+            return run_export_excel(_build_export_excel_namespace(settings))
     if args.command == "download-covers":
-        return run_download_covers(args)
+        with _logging_command_context(args.command):
+            return run_download_covers(_build_download_covers_namespace(settings))
     if args.command == "clear-db":
-        return run_clear_db(args)
+        with _logging_command_context(args.command):
+            return run_clear_db(_build_clear_db_namespace(settings))
     parser.error(f"unknown command: {args.command}")
     return 2

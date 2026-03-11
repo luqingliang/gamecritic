@@ -16,6 +16,7 @@ Python crawler for Metacritic game data, focused on:
 - Crawls critic and user reviews with pagination (`offset/limit`).
 - Stores normalized data + raw JSON payloads into SQLite for traceability.
 - Can sync the full sitemap slug inventory into a dedicated `game_slugs` table.
+- Can backfill critic/user reviews for games already stored in the `games` table.
 - Includes retry + backoff for unstable network/API responses.
 - Exports crawled results to Excel (`.xlsx`) for manual QA.
 
@@ -56,6 +57,7 @@ clear-db
 set db data/metacritic.db
 set concurrency 4
 crawl
+crawl-reviews
 export-excel data/excel/metacritic_export.xlsx
 exit
 ```
@@ -69,54 +71,74 @@ For easier out-of-box usage, `crawl` and interactive mode now use a quick-start 
 - `max_review_pages = 1`
 - `concurrency = 4`
 
+`include_critic_reviews` and `include_user_reviews` only affect `crawl` / `crawl-one`.
+They control whether review data is fetched at the same time as game data.
+They do not affect the dedicated `crawl-reviews` command.
+
 Full crawl now processes all slugs stored in `game_slugs` by default.
+
+Regular command mode now reuses the same shared settings profile as interactive mode.
+Per-command CLI options have been removed; if you need to change settings such as `db`,
+`concurrency`, `download_covers`, or output paths, use `interactive` and `set`.
+Those shared settings are persisted to `config/cli_settings.json` and reused by later
+interactive and non-interactive runs.
 
 2) Crawl one game:
 
 ```bash
-metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild --db data/metacritic.db --include-critic-reviews --include-user-reviews --max-review-pages 2
+metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild
 ```
 
 3) Crawl all stored `game_slugs`:
 
 ```bash
-metacritic-scraper crawl --db data/metacritic.db --include-critic-reviews --include-user-reviews --max-review-pages 1
+metacritic-scraper crawl
+```
+
+4) Backfill reviews for games already stored in `games`:
+
+```bash
+metacritic-scraper crawl-reviews
 ```
 
 Optional: download cover image files while crawling (disabled by default).
 
+Use interactive mode to enable `download_covers` before running `crawl`.
+
 ```bash
-metacritic-scraper crawl --db data/metacritic.db --download-covers --covers-dir data/covers
+metacritic-scraper interactive
 ```
 
 Optional: enable concurrent workers (for example 4 workers).
 
+Use interactive mode to change `concurrency`.
+
 ```bash
-metacritic-scraper crawl --concurrency 4 --db data/metacritic.db --include-critic-reviews --include-user-reviews
+metacritic-scraper interactive
 ```
 
-4) Sync all sitemap slugs into SQLite:
+5) Sync all sitemap slugs into SQLite:
 
 ```bash
-metacritic-scraper sync-slugs --db data/metacritic.db
+metacritic-scraper sync-slugs
 ```
 
-5) Batch download cover image files from already crawled games:
+6) Batch download cover image files from already crawled games:
 
 ```bash
-metacritic-scraper download-covers --db data/metacritic.db --output-dir data/covers
+metacritic-scraper download-covers
 ```
 
-6) Export SQLite data to Excel:
+7) Export SQLite data to Excel:
 
 ```bash
-metacritic-scraper export-excel --db data/metacritic.db --output data/excel/metacritic_export.xlsx
+metacritic-scraper export-excel
 ```
 
-7) Clear all project tables while keeping the schema:
+8) Clear all project tables while keeping the schema:
 
 ```bash
-metacritic-scraper clear-db --db data/metacritic.db
+metacritic-scraper clear-db
 ```
 
 ## CLI Overview
@@ -125,6 +147,7 @@ metacritic-scraper clear-db --db data/metacritic.db
 metacritic-scraper --help
 metacritic-scraper crawl --help
 metacritic-scraper crawl-one --help
+metacritic-scraper crawl-reviews --help
 metacritic-scraper sync-slugs --help
 metacritic-scraper download-covers --help
 metacritic-scraper export-excel --help

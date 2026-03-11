@@ -16,6 +16,11 @@ from metacritic_scraper_py.cli import (
     INTERACTIVE_WELCOME_TITLE,
     LOG_BULLET,
     _InteractiveLogHandler,
+    _build_clear_db_namespace,
+    _build_crawl_namespace,
+    _build_crawl_reviews_namespace,
+    _build_download_covers_namespace,
+    _build_sync_slugs_namespace,
     build_parser,
     _convert_setting_value,
     _interactive_banner_lines,
@@ -24,18 +29,23 @@ from metacritic_scraper_py.cli import (
     _interactive_help_hint_text,
     _interactive_title_art_lines,
     _interactive_defaults,
+    _load_shared_settings,
+    _logging_command_context,
     _parse_bool,
     _refresh_interactive_cursor_blink,
     _run_interactive_command,
     _run_with_captured_stdout,
     _style_output_text,
     _style_output_line,
+    main,
     run_crawl,
+    run_crawl_reviews,
     run_clear_db,
     run_download_covers,
     run_sync_slugs,
 )
-from metacritic_scraper_py.scraper import CrawlResult
+from metacritic_scraper_py.client import MetacriticClientError
+from metacritic_scraper_py.scraper import CrawlResult, MetacriticScraper
 from metacritic_scraper_py.storage import SQLiteStorage
 
 
@@ -47,6 +57,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
             captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
             captured["print_summary"] = getattr(namespace, "print_summary", None)
             emit("[done] exit_code=0")
 
@@ -55,6 +66,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_crawl")
+        self.assertEqual(captured.get("command"), "crawl")
         self.assertTrue(captured.get("print_summary"))
 
     def test_interactive_crawl_one_enables_print_summary(self) -> None:
@@ -64,6 +76,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
             captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
             captured["print_summary"] = getattr(namespace, "print_summary", None)
             emit("[done] exit_code=0")
 
@@ -72,6 +85,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_crawl_one")
+        self.assertEqual(captured.get("command"), "crawl-one")
         self.assertTrue(captured.get("print_summary"))
 
     def test_run_with_captured_stdout_streams_lines(self) -> None:
@@ -84,6 +98,94 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         _run_with_captured_stdout(_func, argparse.Namespace(), output.append)
         self.assertEqual(output, ["line-1", "line-2", "[done] exit_code=0"])
+
+    def test_run_with_captured_stdout_uses_namespace_command_for_logs(self) -> None:
+        output: list[str] = []
+        handler = _InteractiveLogHandler(output.append)
+        root_logger = logging.getLogger()
+        previous_handlers = list(root_logger.handlers)
+        previous_level = root_logger.level
+        for existing_handler in previous_handlers:
+            root_logger.removeHandler(existing_handler)
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.INFO)
+
+        def _func(_: argparse.Namespace) -> int:
+            logging.info("crawl started")
+            logging.warning("partial failure")
+            return 0
+
+        try:
+            _run_with_captured_stdout(_func, argparse.Namespace(command="crawl"), output.append)
+        finally:
+            root_logger.removeHandler(handler)
+            for existing_handler in previous_handlers:
+                root_logger.addHandler(existing_handler)
+            root_logger.setLevel(previous_level)
+
+        self.assertIn(f"{LOG_BULLET} crawl - crawl started\n", output)
+        self.assertIn(f"{LOG_BULLET} crawl-WARNING - partial failure\n", output)
+        self.assertIn("[done] exit_code=0", output)
+
+    def test_concurrent_crawl_worker_logs_use_active_command_name(self) -> None:
+        class _ClientForConcurrentWorkerLogs:
+            def fetch_product(self, slug: str) -> dict:
+                if slug == "broken":
+                    raise MetacriticClientError("product failed")
+                return {"data": {"item": {"id": 1, "title": slug, "platform": "PC"}}}
+
+            def resolve_cover_url(self, *, product_payload: dict) -> str | None:
+                del product_payload
+                return None
+
+            def fetch_score_summary(self, slug: str, review_type: str) -> dict | None:
+                if slug == "alpha" and review_type == "critic":
+                    raise MetacriticClientError("critic summary failed")
+                return None
+
+        output: list[str] = []
+        handler = _InteractiveLogHandler(output.append)
+        root_logger = logging.getLogger()
+        previous_handlers = list(root_logger.handlers)
+        previous_level = root_logger.level
+        for existing_handler in previous_handlers:
+            root_logger.removeHandler(existing_handler)
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.INFO)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game_slugs(
+                    [
+                        ("alpha", "https://www.metacritic.com/game/alpha/", "https://www.metacritic.com/sitemap-1.xml"),
+                        ("broken", "https://www.metacritic.com/game/broken/", "https://www.metacritic.com/sitemap-1.xml"),
+                    ]
+                )
+
+                scraper = MetacriticScraper(_ClientForConcurrentWorkerLogs(), storage)
+                with _logging_command_context("crawl"):
+                    result = scraper.crawl_from_sitemaps(
+                        include_critic_reviews=False,
+                        include_user_reviews=False,
+                        review_page_size=50,
+                        max_review_pages=1,
+                        concurrency=2,
+                    )
+            finally:
+                storage.close()
+                root_logger.removeHandler(handler)
+                for existing_handler in previous_handlers:
+                    root_logger.addHandler(existing_handler)
+                root_logger.setLevel(previous_level)
+
+        self.assertEqual(result.games_crawled, 1)
+        self.assertEqual(result.failed_slugs, ["broken"])
+        self.assertTrue(any("crawl-WARNING - critic summary unavailable for alpha" in line for line in output))
+        self.assertTrue(any("crawl-ERROR - failed fetching product for broken" in line for line in output))
+        self.assertFalse(any("command-WARNING" in line for line in output))
+        self.assertFalse(any("command-ERROR" in line for line in output))
 
     def test_parse_bool(self) -> None:
         self.assertTrue(_parse_bool("true"))
@@ -105,22 +207,24 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_quickstart_defaults_for_crawl_parser(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["crawl"])
-        self.assertFalse(args.include_critic_reviews)
-        self.assertFalse(args.include_user_reviews)
-        self.assertEqual(args.max_review_pages, DEFAULT_QUICKSTART_MAX_REVIEW_PAGES)
-        self.assertEqual(args.concurrency, DEFAULT_CONCURRENCY)
-        self.assertFalse(args.download_covers)
-        self.assertEqual(args.covers_dir, "data/covers")
-        self.assertFalse(args.overwrite_covers)
+        self.assertEqual(args.command, "crawl")
+        self.assertEqual(set(vars(args)), {"verbose", "command"})
 
-    def test_crawl_parser_can_enable_review_types_separately(self) -> None:
+    def test_crawl_parser_rejects_removed_per_command_options(self) -> None:
         parser = build_parser()
-        critic_args = parser.parse_args(["crawl", "--include-critic-reviews"])
-        user_args = parser.parse_args(["crawl", "--include-user-reviews"])
-        self.assertTrue(critic_args.include_critic_reviews)
-        self.assertFalse(critic_args.include_user_reviews)
-        self.assertFalse(user_args.include_critic_reviews)
-        self.assertTrue(user_args.include_user_reviews)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["crawl", "--db", "data/other.db"])
+
+    def test_crawl_help_does_not_expose_removed_per_command_options(self) -> None:
+        parser = build_parser()
+        crawl_parser = next(
+            action.choices["crawl"]
+            for action in parser._actions
+            if hasattr(action, "choices") and isinstance(action.choices, dict) and "crawl" in action.choices
+        )
+        help_text = crawl_parser.format_help()
+        self.assertNotIn("--include-critic-reviews", help_text)
+        self.assertNotIn("--db", help_text)
 
     def test_interactive_defaults_use_quickstart_profile(self) -> None:
         settings = _interactive_defaults()
@@ -134,43 +238,76 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertEqual(settings["export_output"], "data/excel/metacritic_export.xlsx")
         self.assertNotIn("include_raw_json", settings)
 
+    def test_set_command_persists_shared_settings(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "metacritic_scraper_py.cli.SHARED_SETTINGS_PATH",
+            str(Path(tmpdir) / "cli_settings.json"),
+        ):
+            keep_running = _run_interactive_command(["set", "concurrency", "8"], settings, output.append)
+            loaded = _load_shared_settings()
+
+        self.assertTrue(keep_running)
+        self.assertEqual(output, ["Updated: concurrency=8"])
+        self.assertEqual(settings["concurrency"], 8)
+        self.assertEqual(loaded["concurrency"], 8)
+
+    def test_main_uses_loaded_shared_settings_for_noninteractive_crawl(self) -> None:
+        settings = _interactive_defaults()
+        settings["db"] = "data/custom.db"
+        settings["concurrency"] = 8
+        settings["download_covers"] = True
+
+        with patch("metacritic_scraper_py.cli._load_shared_settings", return_value=settings), patch(
+            "metacritic_scraper_py.cli.run_crawl",
+            return_value=0,
+        ) as run_crawl:
+            exit_code = main(["crawl"])
+
+        self.assertEqual(exit_code, 0)
+        dispatched_args = run_crawl.call_args.args[0]
+        self.assertEqual(dispatched_args.db, "data/custom.db")
+        self.assertEqual(dispatched_args.concurrency, 8)
+        self.assertTrue(dispatched_args.download_covers)
+
     def test_crawl_one_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["crawl-one", "demo-game"])
-        self.assertFalse(args.include_critic_reviews)
-        self.assertFalse(args.include_user_reviews)
-        self.assertEqual(args.max_review_pages, DEFAULT_QUICKSTART_MAX_REVIEW_PAGES)
+        self.assertEqual(args.command, "crawl-one")
+        self.assertEqual(args.slug, "demo-game")
+        self.assertEqual(set(vars(args)), {"verbose", "command", "slug"})
+
+    def test_crawl_reviews_parser_defaults(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["crawl-reviews"])
+        self.assertEqual(args.command, "crawl-reviews")
+        self.assertEqual(set(vars(args)), {"verbose", "command"})
 
     def test_download_covers_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["download-covers"])
-        self.assertEqual(args.db, "data/metacritic.db")
-        self.assertEqual(args.output_dir, "data/covers")
-        self.assertFalse(args.overwrite)
+        self.assertEqual(args.command, "download-covers")
+        self.assertEqual(set(vars(args)), {"verbose", "command"})
 
     def test_export_excel_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["export-excel"])
-        self.assertEqual(args.db, "data/metacritic.db")
-        self.assertEqual(args.output, "data/excel/metacritic_export.xlsx")
-        self.assertFalse(hasattr(args, "include_raw_json"))
+        self.assertEqual(args.command, "export-excel")
+        self.assertEqual(set(vars(args)), {"verbose", "command"})
 
     def test_clear_db_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["clear-db"])
-        self.assertEqual(args.db, "data/metacritic.db")
         self.assertEqual(args.command, "clear-db")
-        self.assertEqual(set(vars(args)), {"verbose", "command", "db"})
+        self.assertEqual(set(vars(args)), {"verbose", "command"})
 
     def test_sync_slugs_parser_defaults(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["sync-slugs"])
-        self.assertEqual(args.db, "data/metacritic.db")
         self.assertEqual(args.command, "sync-slugs")
-        self.assertEqual(
-            set(vars(args)),
-            {"verbose", "command", "db", "timeout", "max_retries", "backoff", "delay"},
-        )
+        self.assertEqual(set(vars(args)), {"verbose", "command"})
 
     def test_help_zh_command(self) -> None:
         settings = _interactive_defaults()
@@ -182,6 +319,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("交互命令（中文释义）", output[0])
         self.assertIn("help | help-zh", output[0])
         self.assertIn("show | show-zh", output[0])
+        self.assertIn("crawl-reviews", output[0])
         self.assertIn("clear-db", output[0])
         self.assertIn("请求停止当前后台抓取/下载任务", output[0])
 
@@ -203,6 +341,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(output)
         self.assertIn("help | help-zh", output[0])
         self.assertIn("show | show-zh", output[0])
+        self.assertIn("crawl-reviews", output[0])
         self.assertIn("clear-db", output[0])
         self.assertIn("current background crawl/download task", output[0])
 
@@ -215,6 +354,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(output)
         self.assertIn("concurrency = 4", output[0])
         self.assertIn("并发抓取 worker 数量", output[0])
+        self.assertIn("抓取游戏数据时是否同时抓取媒体评论", output[0])
 
     def test_show_with_zh_argument(self) -> None:
         settings = _interactive_defaults()
@@ -235,6 +375,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(output)
         self.assertIn("concurrency = 4", output[0])
         self.assertIn("Number of concurrent crawl workers", output[0])
+        self.assertIn("Whether to also crawl critic reviews while fetching game data", output[0])
 
     def test_config_alias_includes_english_explanations(self) -> None:
         settings = _interactive_defaults()
@@ -262,6 +403,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
             captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
             captured["print_summary"] = getattr(namespace, "print_summary", None)
             captured["db"] = getattr(namespace, "db", None)
             emit("[done] exit_code=0")
@@ -271,6 +413,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_clear_db")
+        self.assertEqual(captured.get("command"), "clear-db")
         self.assertTrue(captured.get("print_summary"))
         self.assertEqual(captured.get("db"), "data/metacritic.db")
 
@@ -314,6 +457,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
             captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
             captured["stop_event"] = getattr(namespace, "stop_event", None)
             emit("[done] exit_code=130")
 
@@ -327,6 +471,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_crawl")
+        self.assertEqual(captured.get("command"), "crawl")
         self.assertIs(captured.get("stop_event"), stop_event)
 
     def test_interactive_sync_slugs_enables_print_summary(self) -> None:
@@ -336,6 +481,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
             captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
             captured["print_summary"] = getattr(namespace, "print_summary", None)
             emit("[done] exit_code=0")
 
@@ -344,13 +490,60 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_sync_slugs")
+        self.assertEqual(captured.get("command"), "sync-slugs")
         self.assertTrue(captured.get("print_summary"))
 
+    def test_interactive_crawl_reviews_enables_print_summary(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+        captured: dict[str, object] = {}
+
+        def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
+            captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
+            captured["include_critic_reviews"] = getattr(namespace, "include_critic_reviews", None)
+            captured["include_user_reviews"] = getattr(namespace, "include_user_reviews", None)
+            captured["print_summary"] = getattr(namespace, "print_summary", None)
+            captured["stop_event"] = getattr(namespace, "stop_event", None)
+            emit("[done] exit_code=0")
+
+        stop_event = threading.Event()
+        with patch("metacritic_scraper_py.cli._run_with_captured_stdout", side_effect=_fake_run_with_captured_stdout):
+            keep_running = _run_interactive_command(["crawl-reviews"], settings, output.append, stop_event=stop_event)
+
+        self.assertTrue(keep_running)
+        self.assertEqual(captured.get("func_name"), "run_crawl_reviews")
+        self.assertEqual(captured.get("command"), "crawl-reviews")
+        self.assertTrue(captured.get("include_critic_reviews"))
+        self.assertTrue(captured.get("include_user_reviews"))
+        self.assertTrue(captured.get("print_summary"))
+        self.assertIs(captured.get("stop_event"), stop_event)
+
+    def test_interactive_crawl_reviews_ignores_crawl_review_toggle_settings(self) -> None:
+        settings = _interactive_defaults()
+        settings["include_critic_reviews"] = False
+        settings["include_user_reviews"] = False
+        output: list[str] = []
+        captured: dict[str, object] = {}
+
+        def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
+            captured["include_critic_reviews"] = getattr(namespace, "include_critic_reviews", None)
+            captured["include_user_reviews"] = getattr(namespace, "include_user_reviews", None)
+            emit("[done] exit_code=0")
+
+        with patch("metacritic_scraper_py.cli._run_with_captured_stdout", side_effect=_fake_run_with_captured_stdout):
+            keep_running = _run_interactive_command(["crawl-reviews"], settings, output.append)
+
+        self.assertTrue(keep_running)
+        self.assertTrue(captured.get("include_critic_reviews"))
+        self.assertTrue(captured.get("include_user_reviews"))
+
     def test_run_crawl_returns_130_when_scraper_stops(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(["crawl"])
-        args.print_summary = False
-        args.stop_event = threading.Event()
+        args = _build_crawl_namespace(
+            _interactive_defaults(),
+            print_summary=False,
+            stop_event=threading.Event(),
+        )
 
         storage = MagicMock()
         client = MagicMock()
@@ -371,10 +564,11 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         storage.close.assert_called_once()
 
     def test_run_crawl_does_not_log_failed_slugs_at_end(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(["crawl"])
-        args.print_summary = False
-        args.stop_event = threading.Event()
+        args = _build_crawl_namespace(
+            _interactive_defaults(),
+            print_summary=False,
+            stop_event=threading.Event(),
+        )
 
         storage = MagicMock()
         client = MagicMock()
@@ -403,10 +597,76 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertFalse(any("failed slugs:" in message for message in messages))
         storage.close.assert_called_once()
 
+    def test_run_crawl_reviews_defaults_to_both_review_types_when_interactive_settings_disable_both(self) -> None:
+        args = argparse.Namespace(
+            db="data/metacritic.db",
+            include_critic_reviews=False,
+            include_user_reviews=False,
+            review_page_size=50,
+            max_review_pages=1,
+            concurrency=4,
+            timeout=10.0,
+            max_retries=2,
+            backoff=0.5,
+            delay=0.0,
+            print_summary=False,
+            default_to_both_reviews=True,
+            stop_event=threading.Event(),
+        )
+
+        storage = MagicMock()
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = None
+        scraper = MagicMock()
+        scraper.crawl_reviews_from_games.return_value = CrawlResult()
+
+        with patch("metacritic_scraper_py.cli.SQLiteStorage", return_value=storage), patch(
+            "metacritic_scraper_py.cli._build_client",
+            return_value=client,
+        ), patch("metacritic_scraper_py.cli.MetacriticScraper", return_value=scraper):
+            exit_code = run_crawl_reviews(args)
+
+        self.assertEqual(exit_code, 0)
+        scraper.crawl_reviews_from_games.assert_called_once_with(
+            include_critic_reviews=True,
+            include_user_reviews=True,
+            review_page_size=50,
+            max_review_pages=1,
+            concurrency=4,
+        )
+        storage.close.assert_called_once()
+
+    def test_run_crawl_reviews_returns_130_when_scraper_stops(self) -> None:
+        args = _build_crawl_reviews_namespace(
+            _interactive_defaults(),
+            print_summary=False,
+            stop_event=threading.Event(),
+        )
+
+        storage = MagicMock()
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = None
+        scraper = MagicMock()
+        scraper.crawl_reviews_from_games.return_value = CrawlResult(stopped=True)
+
+        with patch("metacritic_scraper_py.cli.SQLiteStorage", return_value=storage), patch(
+            "metacritic_scraper_py.cli._build_client",
+            return_value=client,
+        ), patch("metacritic_scraper_py.cli.MetacriticScraper", return_value=scraper) as scraper_cls:
+            exit_code = run_crawl_reviews(args)
+
+        self.assertEqual(exit_code, 130)
+        self.assertIs(scraper_cls.call_args.kwargs["stop_event"], args.stop_event)
+        scraper.crawl_reviews_from_games.assert_called_once()
+        storage.close.assert_called_once()
+
     def test_run_download_covers_returns_130_when_fetch_is_interrupted(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(["download-covers"])
-        args.stop_event = threading.Event()
+        args = _build_download_covers_namespace(
+            _interactive_defaults(),
+            stop_event=threading.Event(),
+        )
 
         storage = MagicMock()
         storage.list_game_cover_urls.return_value = [("demo-game", "https://cdn.example.com/path/cover.jpg")]
@@ -429,9 +689,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         storage.close.assert_called_once()
 
     def test_run_clear_db_prints_summary_and_closes_storage(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(["clear-db"])
-        args.print_summary = True
+        args = _build_clear_db_namespace(_interactive_defaults(), print_summary=True)
 
         storage = MagicMock()
         storage.clear_all_tables.return_value = {
@@ -457,9 +715,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_run_clear_db_rejects_missing_db_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "missing.db"
-            parser = build_parser()
-            args = parser.parse_args(["clear-db", "--db", str(db_path)])
-            args.print_summary = True
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_clear_db_namespace(settings, print_summary=True)
 
             with patch("metacritic_scraper_py.cli.logging.error") as error_log:
                 exit_code = run_clear_db(args)
@@ -480,9 +738,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             finally:
                 conn.close()
 
-            parser = build_parser()
-            args = parser.parse_args(["clear-db", "--db", str(db_path)])
-            args.print_summary = True
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_clear_db_namespace(settings, print_summary=True)
 
             with patch("metacritic_scraper_py.cli.logging.error") as error_log:
                 exit_code = run_clear_db(args)
@@ -504,10 +762,12 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             self.assertEqual(tables, {"unrelated"})
 
     def test_run_sync_slugs_returns_130_when_stop_is_requested(self) -> None:
-        parser = build_parser()
-        args = parser.parse_args(["sync-slugs"])
-        args.stop_event = threading.Event()
-        args.stop_event.set()
+        stop_event = threading.Event()
+        stop_event.set()
+        args = _build_sync_slugs_namespace(
+            _interactive_defaults(),
+            stop_event=stop_event,
+        )
 
         storage = MagicMock()
         storage.upsert_game_slugs.return_value = (0, 0, 0)
@@ -542,6 +802,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("help or help-zh", banner_text)
         self.assertIn("crawl/download task", banner_text)
         self.assertIn("crawl-one <slug>", banner_text)
+        self.assertIn("crawl-reviews", banner_text)
         self.assertIn("Up / Down", banner_text)
 
     def test_interactive_title_art_lines(self) -> None:
@@ -553,6 +814,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
     def test_clear_db_runs_as_background_interactive_command(self) -> None:
         self.assertIn("clear-db", INTERACTIVE_BACKGROUND_COMMANDS)
+
+    def test_crawl_reviews_runs_as_background_interactive_command(self) -> None:
+        self.assertIn("crawl-reviews", INTERACTIVE_BACKGROUND_COMMANDS)
 
     def test_interactive_game_slugs_status_text_uses_sync_state_update_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -721,31 +985,31 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         )
 
     def test_style_output_line_for_warning_log(self) -> None:
-        line = "● WARNING - failed slugs: demo"
+        line = "● crawl-WARNING - failed slugs: demo"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
             [
                 ("class:log.bullet", "● "),
-                ("class:log.warning", "WARNING - "),
+                ("class:log.warning", "crawl-WARNING - "),
                 ("", "failed slugs: demo"),
             ],
         )
 
     def test_style_output_line_for_error_log(self) -> None:
-        line = "● ERROR - request failed"
+        line = "● crawl-ERROR - request failed"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
             [
                 ("class:log.bullet", "● "),
-                ("class:log.error", "ERROR - "),
+                ("class:log.error", "crawl-ERROR - "),
                 ("", "request failed"),
             ],
         )
 
     def test_style_output_line_for_cover_download_log(self) -> None:
-        line = "● INFO - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers"
+        line = "● download-covers - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
@@ -753,19 +1017,19 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 ("class:log.bullet", "● "),
                 (
                     "class:log.cover",
-                    "INFO - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers",
+                    "download-covers - download-covers finished total=20 downloaded=18 skipped=2 failed=0 output_dir=data/covers",
                 ),
             ],
         )
 
     def test_style_output_line_for_progress_log(self) -> None:
-        line = "● INFO 99/100 - completed slug=demo-game status=ok"
+        line = "● crawl 99/100 - completed slug=demo-game status=ok"
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
             [
                 ("class:log.bullet", "● "),
-                ("", "INFO 99/100 - completed slug=demo-game status=ok"),
+                ("", "crawl 99/100 - completed slug=demo-game status=ok"),
             ],
         )
 
@@ -781,10 +1045,11 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             args=(),
             exc_info=None,
         )
+        record.command_name = "crawl"
 
         handler.emit(record)
 
-        self.assertEqual(output, [f"{LOG_BULLET} INFO - crawl started\n"])
+        self.assertEqual(output, [f"{LOG_BULLET} crawl - crawl started\n"])
 
     def test_style_output_line_for_non_settings(self) -> None:
         fragments = _style_output_line("Unknown command: clear. Type 'help' or 'help-zh' for available commands.")

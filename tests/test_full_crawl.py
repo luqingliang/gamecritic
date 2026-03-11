@@ -31,6 +31,37 @@ class FullCrawlStorageSelectionTestCase(unittest.TestCase):
             finally:
                 storage.close()
 
+    def test_list_crawled_game_slugs_orders_games_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="gamma",
+                    product_payload={"data": {"item": {"id": 3, "title": "Gamma", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+                storage.upsert_game(
+                    slug="alpha",
+                    product_payload={"data": {"item": {"id": 1, "title": "Alpha", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+                storage.upsert_game(
+                    slug="beta",
+                    product_payload={"data": {"item": {"id": 2, "title": "Beta", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+
+                self.assertEqual(storage.list_crawled_game_slugs(), ["alpha", "beta", "gamma"])
+            finally:
+                storage.close()
+
 
 class FullCrawlSourceTestCase(unittest.TestCase):
     def test_crawl_from_sitemaps_reads_slugs_from_game_slugs_table(self) -> None:
@@ -69,6 +100,103 @@ class FullCrawlSourceTestCase(unittest.TestCase):
                 self.assertEqual(captured["kwargs"]["review_page_size"], 50)
                 self.assertEqual(captured["kwargs"]["max_review_pages"], 1)
                 self.assertEqual(captured["kwargs"]["concurrency"], 1)
+            finally:
+                storage.close()
+
+    def test_crawl_reviews_from_games_reads_slugs_from_games_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                for idx, slug in enumerate(["gamma", "alpha", "beta"], start=1):
+                    storage.upsert_game(
+                        slug=slug,
+                        product_payload={"data": {"item": {"id": idx, "title": slug, "platform": "PC"}}},
+                        critic_summary_payload=None,
+                        user_summary_payload=None,
+                        cover_url=None,
+                    )
+
+                scraper = MetacriticScraper(_ClientThatShouldNotListSlugs(), storage)
+                captured: dict[str, object] = {}
+
+                def _fake_crawl_slugs(slugs, **kwargs):
+                    captured["slugs"] = list(slugs)
+                    captured["kwargs"] = kwargs
+                    return CrawlResult()
+
+                with patch.object(scraper, "_crawl_slugs", side_effect=_fake_crawl_slugs):
+                    scraper.crawl_reviews_from_games(
+                        include_critic_reviews=True,
+                        include_user_reviews=False,
+                        review_page_size=50,
+                        max_review_pages=1,
+                        concurrency=1,
+                    )
+
+                self.assertEqual(captured["slugs"], ["alpha", "beta", "gamma"])
+                self.assertEqual(captured["kwargs"]["include_critic_reviews"], True)
+                self.assertEqual(captured["kwargs"]["include_user_reviews"], False)
+                self.assertEqual(captured["kwargs"]["review_page_size"], 50)
+                self.assertEqual(captured["kwargs"]["max_review_pages"], 1)
+                self.assertEqual(captured["kwargs"]["concurrency"], 1)
+                self.assertTrue(callable(captured["kwargs"]["slug_handler"]))
+            finally:
+                storage.close()
+
+    def test_crawl_reviews_for_slug_fetches_reviews_without_product_request(self) -> None:
+        class _ClientReviewsOnly:
+            def __init__(self) -> None:
+                self.review_calls: list[str] = []
+
+            def iter_reviews(
+                self,
+                *,
+                slug: str,
+                review_type: str,
+                page_size: int = 50,
+                max_pages: int | None = None,
+            ):
+                del slug, page_size, max_pages
+                self.review_calls.append(review_type)
+                if review_type == "critic":
+                    yield {
+                        "publicationSlug": "edge",
+                        "publicationName": "Edge",
+                        "date": "2026-03-10",
+                        "score": 80,
+                        "url": "https://example.com/review",
+                        "quote": "solid",
+                        "author": "Critic A",
+                    }
+                    return
+                yield {
+                    "id": "user-review-1",
+                    "author": "UserA",
+                    "score": 9,
+                    "date": "2026-03-10",
+                    "spoiler": False,
+                    "quote": "great",
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                scraper = MetacriticScraper(_ClientReviewsOnly(), storage)
+                result = scraper.crawl_reviews_for_slug(
+                    "reviews-only",
+                    include_critic_reviews=True,
+                    include_user_reviews=True,
+                    review_page_size=50,
+                    max_review_pages=1,
+                )
+
+                self.assertEqual(result.games_crawled, 0)
+                self.assertEqual(result.critic_reviews_saved, 1)
+                self.assertEqual(result.user_reviews_saved, 1)
+                self.assertEqual(storage.count_rows("critic_reviews"), 1)
+                self.assertEqual(storage.count_rows("user_reviews"), 1)
             finally:
                 storage.close()
 

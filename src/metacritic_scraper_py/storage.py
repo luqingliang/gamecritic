@@ -368,6 +368,21 @@ class SQLiteStorage:
             rows = cursor.fetchall()
         return [str(row[0]) for row in rows]
 
+    def list_crawled_game_slugs(
+        self,
+    ) -> list[str]:
+        query = """
+            SELECT slug
+            FROM games
+            WHERE slug IS NOT NULL AND TRIM(slug) != ''
+            ORDER BY slug ASC
+        """
+
+        with self._lock:
+            cursor = self.conn.execute(query)
+            rows = cursor.fetchall()
+        return [str(row[0]) for row in rows]
+
     def count_rows(self, table_name: str) -> int:
         with self._lock:
             cursor = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}")

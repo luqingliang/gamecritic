@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from metacritic_scraper_py.cli import (
+    _build_sync_slugs_namespace,
+    _interactive_defaults,
     GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
-    build_parser,
     run_sync_slugs,
 )
 from metacritic_scraper_py.client import GameSlugRecord
@@ -102,9 +103,9 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "slugs.db"
-            parser = build_parser()
-            args = parser.parse_args(["sync-slugs", "--db", str(db_path)])
-            args.print_summary = False
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_sync_slugs_namespace(settings, print_summary=False)
 
             with patch("metacritic_scraper_py.cli._build_client", return_value=_FakeSlugClient(records)):
                 exit_code = run_sync_slugs(args)
@@ -147,9 +148,9 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "slugs.db"
-            parser = build_parser()
-            args = parser.parse_args(["sync-slugs", "--db", str(db_path)])
-            args.print_summary = False
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_sync_slugs_namespace(settings, print_summary=False)
 
             with patch("metacritic_scraper_py.cli._build_client", return_value=_FakeSlugClient(records)), self.assertLogs(
                 level="INFO"
@@ -178,9 +179,9 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "slugs.db"
-            parser = build_parser()
-            args = parser.parse_args(["sync-slugs", "--db", str(db_path)])
-            args.print_summary = False
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_sync_slugs_namespace(settings, print_summary=False)
 
             with patch("metacritic_scraper_py.cli._build_client", return_value=_FakeSlugClient(records)):
                 exit_code = run_sync_slugs(args)
@@ -217,9 +218,9 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "slugs.db"
-            parser = build_parser()
-            args = parser.parse_args(["sync-slugs", "--db", str(db_path)])
-            args.print_summary = False
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_sync_slugs_namespace(settings, print_summary=False)
 
             with patch("metacritic_scraper_py.cli._build_client", return_value=_FakeSlugClient(records)), patch(
                 "metacritic_scraper_py.cli.DEFAULT_SLUG_SYNC_BATCH_SIZE",

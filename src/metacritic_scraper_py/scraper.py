@@ -4,7 +4,8 @@ import concurrent.futures
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Iterable
+from contextvars import copy_context
+from typing import Callable, Iterable
 
 from .client import MetacriticClient, MetacriticClientError
 from .cover_downloader import CoverImageDownloader
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CrawlResult:
+    slugs_processed: int = 0
     games_crawled: int = 0
     critic_reviews_saved: int = 0
     user_reviews_saved: int = 0
@@ -80,6 +82,7 @@ class MetacriticScraper:
 
     @staticmethod
     def _merge_result(into: CrawlResult, one: CrawlResult) -> None:
+        into.slugs_processed += one.slugs_processed
         into.games_crawled += one.games_crawled
         into.critic_reviews_saved += one.critic_reviews_saved
         into.user_reviews_saved += one.user_reviews_saved
@@ -99,28 +102,33 @@ class MetacriticScraper:
         max_review_pages: int | None,
         concurrency: int,
         cover_downloader: CoverImageDownloader | None = None,
+        slug_handler: Callable[[str], CrawlResult] | None = None,
     ) -> CrawlResult:
         result = CrawlResult()
         worker_count = max(1, concurrency)
         slug_list = slugs if isinstance(slugs, list) else list(slugs)
         total = len(slug_list)
         completed = 0
+        handle_slug = slug_handler or (
+            lambda slug: self.crawl_slug(
+                slug,
+                include_critic_reviews=include_critic_reviews,
+                include_user_reviews=include_user_reviews,
+                review_page_size=review_page_size,
+                max_review_pages=max_review_pages,
+                cover_downloader=cover_downloader,
+            )
+        )
 
         if worker_count == 1:
             try:
                 for slug in slug_list:
                     self._check_stopped()
-                    one = self.crawl_slug(
-                        slug,
-                        include_critic_reviews=include_critic_reviews,
-                        include_user_reviews=include_user_reviews,
-                        review_page_size=review_page_size,
-                        max_review_pages=max_review_pages,
-                        cover_downloader=cover_downloader,
-                    )
+                    one = handle_slug(slug)
                     self._merge_result(result, one)
                     if not one.stopped:
                         completed += 1
+                        result.slugs_processed += 1
                         self._log_slug_progress(slug=slug, result=one, completed=completed, total=total)
                     if one.stopped:
                         break
@@ -155,6 +163,7 @@ class MetacriticScraper:
                         logger.error("unhandled error while crawling slug=%s: %s", slug, exc)
                         result.failed_slugs.append(slug)
                         completed += 1
+                        result.slugs_processed += 1
                         self._log_with_progress(
                             logging.INFO,
                             "completed slug=%s status=failed",
@@ -165,6 +174,7 @@ class MetacriticScraper:
                     self._merge_result(result, one)
                     if not one.stopped:
                         completed += 1
+                        result.slugs_processed += 1
                         self._log_slug_progress(slug=slug, result=one, completed=completed, total=total)
                 return
 
@@ -175,14 +185,11 @@ class MetacriticScraper:
                     if result.stopped:
                         break
 
+                    future_context = copy_context()
                     future = pool.submit(
-                        self.crawl_slug,
+                        future_context.run,
+                        handle_slug,
                         slug,
-                        include_critic_reviews=include_critic_reviews,
-                        include_user_reviews=include_user_reviews,
-                        review_page_size=review_page_size,
-                        max_review_pages=max_review_pages,
-                        cover_downloader=cover_downloader,
                     )
                     future_to_slug[future] = slug
 
@@ -271,6 +278,27 @@ class MetacriticScraper:
                 result.covers_failed += 1
                 logger.warning("cover download failed for slug=%s url=%s", slug, cover_url)
 
+        reviews_result = self.crawl_reviews_for_slug(
+            slug,
+            include_critic_reviews=include_critic_reviews,
+            include_user_reviews=include_user_reviews,
+            review_page_size=review_page_size,
+            max_review_pages=max_review_pages,
+        )
+        self._merge_result(result, reviews_result)
+        return result
+
+    def crawl_reviews_for_slug(
+        self,
+        slug: str,
+        *,
+        include_critic_reviews: bool,
+        include_user_reviews: bool,
+        review_page_size: int,
+        max_review_pages: int | None,
+    ) -> CrawlResult:
+        result = CrawlResult()
+
         if not include_critic_reviews and not include_user_reviews:
             return result
 
@@ -353,4 +381,34 @@ class MetacriticScraper:
             max_review_pages=max_review_pages,
             concurrency=concurrency,
             cover_downloader=cover_downloader,
+        )
+
+    def crawl_reviews_from_games(
+        self,
+        *,
+        include_critic_reviews: bool,
+        include_user_reviews: bool,
+        review_page_size: int,
+        max_review_pages: int | None,
+        concurrency: int = 4,
+    ) -> CrawlResult:
+        review_slugs = self.storage.list_crawled_game_slugs()
+
+        if not review_slugs:
+            logger.warning("games table is empty or no rows matched; crawl games first")
+
+        return self._crawl_slugs(
+            review_slugs,
+            include_critic_reviews=include_critic_reviews,
+            include_user_reviews=include_user_reviews,
+            review_page_size=review_page_size,
+            max_review_pages=max_review_pages,
+            concurrency=concurrency,
+            slug_handler=lambda slug: self.crawl_reviews_for_slug(
+                slug,
+                include_critic_reviews=include_critic_reviews,
+                include_user_reviews=include_user_reviews,
+                review_page_size=review_page_size,
+                max_review_pages=max_review_pages,
+            ),
         )

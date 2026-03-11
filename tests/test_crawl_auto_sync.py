@@ -5,8 +5,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from metacritic_scraper_py.cli import (
+    _build_crawl_namespace,
+    _interactive_defaults,
     GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
-    build_parser,
     run_crawl,
 )
 from metacritic_scraper_py.scraper import CrawlResult
@@ -14,11 +15,10 @@ from metacritic_scraper_py.storage import SQLiteStorage
 
 
 class CrawlAutoSyncTestCase(unittest.TestCase):
-    def _build_args(self, db_path: Path, *extra: str):
-        parser = build_parser()
-        args = parser.parse_args(["crawl", "--db", str(db_path), *extra])
-        args.print_summary = False
-        return args
+    def _build_args(self, db_path: Path):
+        settings = _interactive_defaults()
+        settings["db"] = str(db_path)
+        return _build_crawl_namespace(settings, print_summary=False)
 
     def _set_checkpoint(self, db_path: Path, checkpoint: str | None) -> None:
         storage = SQLiteStorage(db_path)

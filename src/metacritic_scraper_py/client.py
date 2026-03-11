@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 import xml.etree.ElementTree as ET
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Iterator, Literal
 from urllib.parse import urlparse
@@ -127,8 +128,10 @@ class MetacriticClient:
         )
         self._stop_watcher: threading.Thread | None = None
         if self._stop_event is not None:
+            watcher_context = copy_context()
             self._stop_watcher = threading.Thread(
-                target=self._watch_for_stop,
+                target=watcher_context.run,
+                args=(self._watch_for_stop,),
                 name="metacritic-client-stop",
                 daemon=True,
             )

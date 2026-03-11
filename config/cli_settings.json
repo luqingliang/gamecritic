@@ -1,0 +1,16 @@
+{
+  "backoff": 1.5,
+  "concurrency": 4,
+  "covers_dir": "data/covers",
+  "db": "data/metacritic.db",
+  "delay": 0.2,
+  "download_covers": false,
+  "export_output": "data/excel/metacritic_export.xlsx",
+  "include_critic_reviews": false,
+  "include_user_reviews": false,
+  "max_retries": 4,
+  "max_review_pages": 1,
+  "overwrite_covers": false,
+  "review_page_size": 50,
+  "timeout": 30.0
+}

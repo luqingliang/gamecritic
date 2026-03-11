@@ -16,6 +16,7 @@
 - 按分页抓取媒体评论与用户评论（`offset/limit`）。
 - 以规范化字段 + 原始 JSON 方式落库，便于追溯与二次处理。
 - 支持把 sitemap 全量 slug 同步到独立的 `game_slugs` 表。
+- 支持针对 `games` 表里已有游戏单独补抓媒体评论和用户评论。
 - 内置重试与退避，提升网络波动下的稳定性。
 - 支持导出 `.xlsx`，方便人工检查抓取结果。
 
@@ -56,6 +57,7 @@ clear-db
 set db data/metacritic.db
 set concurrency 4
 crawl
+crawl-reviews
 export-excel data/excel/metacritic_export.xlsx
 exit
 ```
@@ -69,54 +71,74 @@ exit
 - `max_review_pages = 1`
 - `concurrency = 4`
 
+`include_critic_reviews` 和 `include_user_reviews` 仅影响 `crawl` / `crawl-one`。
+它们只控制在抓取游戏数据时是否顺带抓取评论数据。
+它们不会影响专门用于补抓评论的 `crawl-reviews` 命令。
+
 全量抓取现在默认会处理 `game_slugs` 表中的全部 slug。
+
+普通命令模式现在会和交互模式共用同一套配置。
+各子命令的单独 CLI 参数已经移除；如果你需要修改 `db`、`concurrency`、
+`download_covers`、导出路径等设置，请先进入 `interactive` 再用 `set` 调整。
+这套共享配置会持久化到 `config/cli_settings.json`，后续的交互模式和普通命令模式
+都会继续复用。
 
 2) 抓取单个游戏：
 
 ```bash
-metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild --db data/metacritic.db --include-critic-reviews --include-user-reviews --max-review-pages 2
+metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild
 ```
 
 3) 抓取 `game_slugs` 表中的全部 slug：
 
 ```bash
-metacritic-scraper crawl --db data/metacritic.db --include-critic-reviews --include-user-reviews --max-review-pages 1
+metacritic-scraper crawl
+```
+
+4) 为 `games` 表中已保存的游戏补抓评论：
+
+```bash
+metacritic-scraper crawl-reviews
 ```
 
 可选：在抓取游戏信息时同时下载封面图片实体（默认关闭）。
 
+如果要开启 `download_covers`，请先进入交互模式设置。
+
 ```bash
-metacritic-scraper crawl --db data/metacritic.db --download-covers --covers-dir data/covers
+metacritic-scraper interactive
 ```
 
 可选：开启并发抓取（例如 4 个 worker）。
 
+如果要修改 `concurrency`，请先进入交互模式设置。
+
 ```bash
-metacritic-scraper crawl --concurrency 4 --db data/metacritic.db --include-critic-reviews --include-user-reviews
+metacritic-scraper interactive
 ```
 
-4) 将 sitemap 中的全部 slug 同步到 SQLite：
+5) 将 sitemap 中的全部 slug 同步到 SQLite：
 
 ```bash
-metacritic-scraper sync-slugs --db data/metacritic.db
+metacritic-scraper sync-slugs
 ```
 
-5) 基于已抓取游戏信息批量下载封面图片实体：
+6) 基于已抓取游戏信息批量下载封面图片实体：
 
 ```bash
-metacritic-scraper download-covers --db data/metacritic.db --output-dir data/covers
+metacritic-scraper download-covers
 ```
 
-6) 导出 SQLite 数据到 Excel：
+7) 导出 SQLite 数据到 Excel：
 
 ```bash
-metacritic-scraper export-excel --db data/metacritic.db --output data/excel/metacritic_export.xlsx
+metacritic-scraper export-excel
 ```
 
-7) 在保留表结构的前提下一键清空所有业务表：
+8) 在保留表结构的前提下一键清空所有业务表：
 
 ```bash
-metacritic-scraper clear-db --db data/metacritic.db
+metacritic-scraper clear-db
 ```
 
 ## CLI 概览
@@ -125,6 +147,7 @@ metacritic-scraper clear-db --db data/metacritic.db
 metacritic-scraper --help
 metacritic-scraper crawl --help
 metacritic-scraper crawl-one --help
+metacritic-scraper crawl-reviews --help
 metacritic-scraper sync-slugs --help
 metacritic-scraper download-covers --help
 metacritic-scraper export-excel --help
