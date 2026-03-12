@@ -10,6 +10,14 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.1.9] - 2026-03-12
+
+### Changed
+- Renamed the project, package, and CLI entry point from the old Metacritic-specific naming to `gamecritic`.
+- Renamed the Python package path from `metacritic_scraper_py` to `gamecritic`.
+- Updated the local default database and Excel export filenames to the `gamecritic` naming scheme.
+- Updated repository links and README branding to the new `gamecritic` repository name.
+
 ## [0.1.8] - 2026-03-12
 
 ### Added
@@ -124,7 +132,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/luqingliang/gamecritic/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/luqingliang/gamecritic/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/luqingliang/gamecritic/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/luqingliang/gamecritic/compare/v0.1.5...v0.1.6
