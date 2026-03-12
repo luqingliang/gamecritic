@@ -10,6 +10,18 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.1.8] - 2026-03-12
+
+### Added
+- Shared `config/cli_settings.json` template for persistent CLI defaults.
+- Interactive mode can now run `crawl-reviews` as a background command.
+- Regression coverage for shared settings, crawl auto-sync, and review crawl workflows.
+
+### Changed
+- `crawl`, `crawl-one`, `crawl-reviews`, `sync-slugs`, `download-covers`, and `export-excel` now read from one shared settings profile.
+- Interactive `set` / `reset` changes are now reused by later non-interactive command runs.
+- README documentation was reorganized around quick start, CLI settings, and common command reference sections.
+
 ## [0.1.7] - 2026-03-11
 
 ### Added
@@ -112,7 +124,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/luqingliang/metacritic-scraper-py/compare/v0.1.4...v0.1.5
