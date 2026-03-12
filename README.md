@@ -8,186 +8,144 @@ Python crawler for Metacritic game data, focused on:
 - game detail extraction from Metacritic backend JSON endpoints
 - critic/user reviews pagination
 - SQLite persistence for crawled data and sync checkpoints
-
-## Features
-
-- Uses `https://www.metacritic.com/games.xml` as the primary game seed source.
-- Crawls game detail endpoint (`Product`) and score summary endpoints.
-- Crawls critic and user reviews with pagination (`offset/limit`).
-- Stores normalized data + raw JSON payloads into SQLite for traceability.
-- Can sync the full sitemap slug inventory into a dedicated `game_slugs` table.
-- Can backfill critic/user reviews for games already stored in the `games` table.
-- Includes retry + backoff for unstable network/API responses.
-- Exports crawled results to Excel (`.xlsx`) for manual QA.
+- Excel export for crawled SQLite data
+- optional cover image file download
 
 ## Requirements
 
 - Python 3.10+
 
-## Install
+## Quick Start
 
 ```bash
-cd /home/luqingliang/projects/metacritic-scraper-py
+# From the project root, create a local virtual environment and install the package
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
-```
 
-## Quick Start
-
-1) Start interactive shell (persistent session, like a REPL):
-
-```bash
+# Start the interactive shell
 metacritic-scraper
 # or: metacritic-scraper interactive
 ```
 
-Interactive UI uses a fixed bottom input box (`metacritic>`) and a scrollable output pane above it.
-Press `Enter` to run a command, `Ctrl-C`/`Ctrl-D` to exit.
-If the session is not a TTY (for example piped input), it automatically falls back to plain REPL mode.
+## CLI Settings
 
-Inside interactive shell:
+`config/cli_settings.json` is the shared settings profile for the interactive shell and the
+regular CLI commands.
+You can edit this file directly, or update the same settings from
+`metacritic-scraper interactive` with commands such as `set <key> <value>` and `reset`.
 
-```text
-show
-help-zh
-show-zh
-clear-db
-set db data/metacritic.db
-set concurrency 4
-crawl
-crawl-reviews
-export-excel data/excel/metacritic_export.xlsx
-exit
+Parameter reference:
+
+```jsonc
+{
+  // SQLite database path
+  "db": "data/metacritic.db",
+
+  // Fetch critic reviews during `crawl` / `crawl-one`
+  "include_critic_reviews": false,
+
+  // Fetch user reviews during `crawl` / `crawl-one`
+  "include_user_reviews": false,
+
+  // Number of reviews requested per page
+  "review_page_size": 50,
+
+  // Maximum review pages fetched per game
+  "max_review_pages": 1,
+
+  // Number of concurrent workers for batch crawl tasks
+  "concurrency": 4,
+
+  // Request timeout in seconds
+  "timeout": 30.0,
+
+  // Maximum retry attempts per request
+  "max_retries": 4,
+
+  // Retry backoff interval in seconds
+  "backoff": 1.5,
+
+  // Delay between requests in seconds
+  "delay": 0.2,
+
+  // Download cover files while crawling
+  "download_covers": false,
+
+  // Directory for downloaded cover files
+  "covers_dir": "data/covers",
+
+  // Overwrite existing cover files
+  "overwrite_covers": false,
+
+  // Output path for Excel export
+  "export_output": "data/excel/metacritic_export.xlsx"
+}
 ```
 
-## Quick-Start Defaults
-
-For easier out-of-box usage, `crawl` and interactive mode now use a quick-start profile by default:
-
-- `include_critic_reviews = false`
-- `include_user_reviews = false`
-- `max_review_pages = 1`
-- `concurrency = 4`
-
-`include_critic_reviews` and `include_user_reviews` only affect `crawl` / `crawl-one`.
-They control whether review data is fetched at the same time as game data.
-They do not affect the dedicated `crawl-reviews` command.
-
-Full crawl now processes all slugs stored in `game_slugs` by default.
-
-Regular command mode now reuses the same shared settings profile as interactive mode.
-Per-command CLI options have been removed; if you need to change settings such as `db`,
-`concurrency`, `download_covers`, or output paths, use `interactive` and `set`.
-Those shared settings are persisted to `config/cli_settings.json` and reused by later
-interactive and non-interactive runs.
-
-2) Crawl one game:
+## Common Commands
 
 ```bash
+# Crawl one game
 metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild
 ```
 
-3) Crawl all stored `game_slugs`:
-
 ```bash
+# Crawl all stored `game_slugs`
 metacritic-scraper crawl
 ```
 
-4) Backfill reviews for games already stored in `games`:
-
 ```bash
+# Backfill reviews for games already stored in `games`
 metacritic-scraper crawl-reviews
 ```
 
-Optional: download cover image files while crawling (disabled by default).
-
-Use interactive mode to enable `download_covers` before running `crawl`.
-
 ```bash
+# Enable `download_covers` in interactive mode before running `crawl`
 metacritic-scraper interactive
+# then run inside the interactive shell: set download_covers true
 ```
 
-Optional: enable concurrent workers (for example 4 workers).
-
-Use interactive mode to change `concurrency`.
-
 ```bash
+# Change `concurrency` in interactive mode, for example to 4 workers
 metacritic-scraper interactive
+# then run inside the interactive shell: set concurrency 4
 ```
 
-5) Sync all sitemap slugs into SQLite:
-
 ```bash
+# Sync all sitemap slugs into SQLite
 metacritic-scraper sync-slugs
 ```
 
-6) Batch download cover image files from already crawled games:
-
 ```bash
+# Batch download cover image files from already crawled games
 metacritic-scraper download-covers
 ```
 
-7) Export SQLite data to Excel:
-
 ```bash
+# Export SQLite data to Excel
 metacritic-scraper export-excel
 ```
 
-8) Clear all project tables while keeping the schema:
-
 ```bash
+# Clear all project tables while keeping the schema
 metacritic-scraper clear-db
-```
-
-## CLI Overview
-
-```bash
-metacritic-scraper --help
-metacritic-scraper crawl --help
-metacritic-scraper crawl-one --help
-metacritic-scraper crawl-reviews --help
-metacritic-scraper sync-slugs --help
-metacritic-scraper download-covers --help
-metacritic-scraper export-excel --help
-metacritic-scraper clear-db --help
-metacritic-scraper interactive --help
 ```
 
 ## Data Schema
 
 SQLite tables:
 
-- `games`
-- `game_slugs`
-- `critic_reviews`
-- `user_reviews`
-- `sync_state`
-
-Each table stores essential normalized fields and raw JSON payloads (`*_json`) for future reprocessing.
-`games.cover_url` stores the cover image URL built from product `bucketPath` (`/a/img/catalog/...`).
-`game_slugs` stores the current sitemap slug index with `game_url`, `sitemap_url`, `discovered_at`, and `last_seen_at`.
-`sync_state` stores lightweight checkpoints such as
-`game_slugs_last_successful_full_sync_at`.
+- `games`: Stores crawled game metadata, score summaries, cover URL, and raw product/summary JSON snapshots.
+- `game_slugs`: Stores the sitemap-derived slug index, including source sitemap and discovery timestamps.
+- `critic_reviews`: Stores critic review records associated with each game slug.
+- `user_reviews`: Stores user review records keyed by review ID and linked back to each game slug.
+- `sync_state`: Stores lightweight key-value checkpoints such as sync progress markers.
 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](./LICENSE).
-
-## Roadmap
-
-- [x] Crawl game details and reviews
-- [x] Export results to Excel
-- [x] Optional concurrent crawling (`--concurrency`)
-- [x] Interactive CLI mode
-- [x] Store cover URLs in `games.cover_url`
-- [x] Sync sitemap slug inventory into `game_slugs`
-- [x] Optional cover download during crawl (`--download-covers`)
-- [x] Batch cover download from DB (`download-covers`)
-- [ ] Expand to Movies
-- [ ] Expand to TV Shows
-- [ ] Expand to Music
 
 ## Notes
 

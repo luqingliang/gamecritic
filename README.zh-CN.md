@@ -8,186 +8,143 @@
 - 从 Metacritic 后端 JSON 接口抓取游戏详情
 - 抓取媒体评分/用户评分评论分页数据
 - 使用 SQLite 持久化抓取结果和同步检查点
-
-## 功能特性
-
-- 使用 `https://www.metacritic.com/games.xml` 作为主要种子来源。
-- 抓取游戏详情接口（`Product`）和评分摘要接口。
-- 按分页抓取媒体评论与用户评论（`offset/limit`）。
-- 以规范化字段 + 原始 JSON 方式落库，便于追溯与二次处理。
-- 支持把 sitemap 全量 slug 同步到独立的 `game_slugs` 表。
-- 支持针对 `games` 表里已有游戏单独补抓媒体评论和用户评论。
-- 内置重试与退避，提升网络波动下的稳定性。
-- 支持导出 `.xlsx`，方便人工检查抓取结果。
+- 支持将抓取结果导出为 Excel
+- 支持下载封面实体图片文件
 
 ## 运行要求
 
 - Python 3.10+
 
-## 安装
+## 快速开始
 
 ```bash
-cd /home/luqingliang/projects/metacritic-scraper-py
+# 在项目根目录中创建虚拟环境并安装项目
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -e .
-```
 
-## 快速开始
-
-1) 启动交互模式（常驻 REPL）：
-
-```bash
+# 启动交互模式
 metacritic-scraper
 # 或：metacritic-scraper interactive
 ```
 
-交互界面为“底部固定输入框（`metacritic>`）+ 上方可滚动输出区”。
-按 `Enter` 执行命令，按 `Ctrl-C`/`Ctrl-D` 退出。
-当会话不是 TTY（例如通过管道输入）时，会自动回退到普通 REPL 模式。
+## CLI Settings
 
-在交互模式里可直接输入：
+`config/cli_settings.json` 是交互模式和普通 CLI 命令共用的一份共享配置文件。
+你既可以直接手动编辑这个文件，也可以在 `metacritic-scraper interactive`
+里通过 `set <key> <value>` 和 `reset` 这类命令修改同一份配置。
 
-```text
-show
-help-zh
-show-zh
-clear-db
-set db data/metacritic.db
-set concurrency 4
-crawl
-crawl-reviews
-export-excel data/excel/metacritic_export.xlsx
-exit
+参数说明：
+
+```jsonc
+{
+  // SQLite 数据库路径
+  "db": "data/metacritic.db",
+
+  // 在 `crawl` / `crawl-one` 时抓取媒体评论
+  "include_critic_reviews": false,
+
+  // 在 `crawl` / `crawl-one` 时抓取用户评论
+  "include_user_reviews": false,
+
+  // 每页请求的评论条数
+  "review_page_size": 50,
+
+  // 每个游戏最多抓取的评论页数
+  "max_review_pages": 1,
+
+  // 批量抓取任务的并发 worker 数
+  "concurrency": 4,
+
+  // 单次请求超时时间，单位为秒
+  "timeout": 30.0,
+
+  // 单次请求的最大重试次数
+  "max_retries": 4,
+
+  // 重试退避间隔，单位为秒
+  "backoff": 1.5,
+
+  // 常规请求之间的间隔，单位为秒
+  "delay": 0.2,
+
+  // 抓取时是否顺带下载封面文件
+  "download_covers": false,
+
+  // 封面文件下载目录
+  "covers_dir": "data/covers",
+
+  // 是否覆盖已存在的封面文件
+  "overwrite_covers": false,
+
+  // Excel 导出文件路径
+  "export_output": "data/excel/metacritic_export.xlsx"
+}
 ```
 
-## 开箱默认配置
-
-为了更利于上手，`crawl` 和交互模式默认使用“快速上手配置”：
-
-- `include_critic_reviews = false`
-- `include_user_reviews = false`
-- `max_review_pages = 1`
-- `concurrency = 4`
-
-`include_critic_reviews` 和 `include_user_reviews` 仅影响 `crawl` / `crawl-one`。
-它们只控制在抓取游戏数据时是否顺带抓取评论数据。
-它们不会影响专门用于补抓评论的 `crawl-reviews` 命令。
-
-全量抓取现在默认会处理 `game_slugs` 表中的全部 slug。
-
-普通命令模式现在会和交互模式共用同一套配置。
-各子命令的单独 CLI 参数已经移除；如果你需要修改 `db`、`concurrency`、
-`download_covers`、导出路径等设置，请先进入 `interactive` 再用 `set` 调整。
-这套共享配置会持久化到 `config/cli_settings.json`，后续的交互模式和普通命令模式
-都会继续复用。
-
-2) 抓取单个游戏：
+## 常用命令
 
 ```bash
+# 抓取单个游戏
 metacritic-scraper crawl-one the-legend-of-zelda-breath-of-the-wild
 ```
 
-3) 抓取 `game_slugs` 表中的全部 slug：
-
 ```bash
+# 抓取 `game_slugs` 表中的全部 slug
 metacritic-scraper crawl
 ```
 
-4) 为 `games` 表中已保存的游戏补抓评论：
-
 ```bash
+# 为 `games` 表中已保存的游戏补抓评论
 metacritic-scraper crawl-reviews
 ```
 
-可选：在抓取游戏信息时同时下载封面图片实体（默认关闭）。
-
-如果要开启 `download_covers`，请先进入交互模式设置。
-
 ```bash
+# 在运行 `crawl` 前进入交互模式开启 `download_covers`
 metacritic-scraper interactive
+# 然后在交互模式里执行：set download_covers true
 ```
 
-可选：开启并发抓取（例如 4 个 worker）。
-
-如果要修改 `concurrency`，请先进入交互模式设置。
-
 ```bash
+# 在交互模式里修改 `concurrency`，例如设置为 4 个 worker
 metacritic-scraper interactive
+# 然后在交互模式里执行：set concurrency 4
 ```
 
-5) 将 sitemap 中的全部 slug 同步到 SQLite：
-
 ```bash
+# 将 sitemap 中的全部 slug 同步到 SQLite
 metacritic-scraper sync-slugs
 ```
 
-6) 基于已抓取游戏信息批量下载封面图片实体：
-
 ```bash
+# 基于已抓取游戏信息批量下载封面图片实体
 metacritic-scraper download-covers
 ```
 
-7) 导出 SQLite 数据到 Excel：
-
 ```bash
+# 导出 SQLite 数据到 Excel
 metacritic-scraper export-excel
 ```
 
-8) 在保留表结构的前提下一键清空所有业务表：
-
 ```bash
+# 在保留表结构的前提下一键清空所有业务表
 metacritic-scraper clear-db
-```
-
-## CLI 概览
-
-```bash
-metacritic-scraper --help
-metacritic-scraper crawl --help
-metacritic-scraper crawl-one --help
-metacritic-scraper crawl-reviews --help
-metacritic-scraper sync-slugs --help
-metacritic-scraper download-covers --help
-metacritic-scraper export-excel --help
-metacritic-scraper clear-db --help
-metacritic-scraper interactive --help
 ```
 
 ## 数据表结构
 
 SQLite 表：
 
-- `games`
-- `game_slugs`
-- `critic_reviews`
-- `user_reviews`
-- `sync_state`
-
-每张表都保存关键规范化字段和原始 JSON（`*_json`），便于后续重放解析。
-其中 `games.cover_url` 用于保存封面图链接，直接由产品 `bucketPath` 组装为 catalog 原图地址（`/a/img/catalog/...`）。
-`game_slugs` 用于保存 sitemap slug 索引，并记录 `game_url`、`sitemap_url`、`discovered_at` 和 `last_seen_at`。
-`sync_state` 用于保存轻量级检查点，比如
-`game_slugs_last_successful_full_sync_at`。
+- `games`：保存抓取到的游戏基础信息、评分摘要、封面链接，以及原始 product/summary JSON 快照。
+- `game_slugs`：保存从 sitemap 同步得到的 slug 索引，以及来源 sitemap 和发现时间信息。
+- `critic_reviews`：保存与游戏 slug 关联的媒体评论数据。
+- `user_reviews`：保存按 `review_id` 去重、并关联到游戏 slug 的用户评论数据。
+- `sync_state`：保存轻量级键值状态，例如同步进度检查点。
 
 ## 许可证
 
 本项目使用 MIT License，详见 [LICENSE](./LICENSE)。
-
-## 项目路书
-
-- [x] 抓取游戏详情与评论
-- [x] 支持 Excel 导出
-- [x] 支持并发抓取（`--concurrency`）
-- [x] 支持交互 CLI 模式
-- [x] 保存封面链接到 `games.cover_url`
-- [x] 支持将 sitemap slug 索引同步到 `game_slugs`
-- [x] 抓取时可选下载封面（`--download-covers`）
-- [x] 支持基于数据库批量下载封面（`download-covers`）
-- [ ] 扩展电影数据
-- [ ] 扩展电视剧/节目数据
-- [ ] 扩展音乐数据
 
 ## 注意事项
 
