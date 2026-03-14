@@ -49,6 +49,81 @@ INTERACTIVE_BACKGROUND_COMMANDS = {
     "clear-db",
 }
 INTERACTIVE_STOPPABLE_COMMANDS = {"crawl", "crawl-one", "crawl-reviews", "sync-slugs", "download-covers"}
+INTERACTIVE_HELP_LABEL_WIDTH = 34
+INTERACTIVE_HELP_COMMANDS = (
+    ("crawl", "Run crawl with current settings", "用当前配置执行批量抓取"),
+    (
+        "search-slug <game_name>",
+        "Search the best-matching local slug by game name",
+        "根据游戏名搜索本地最匹配的 slug",
+    ),
+    ("crawl-one <slug>", "Crawl one game with current settings", "抓取单个游戏"),
+    (
+        "crawl-reviews",
+        "Backfill both critic and user reviews for games in SQLite",
+        "为 SQLite 中已有游戏补抓媒体和用户评论",
+    ),
+    ("sync-slugs", "Sync sitemap slugs into SQLite", "将 sitemap 中的 slug 同步到 SQLite"),
+    (
+        "download-covers [output_dir]",
+        "Download cover image files from DB",
+        "基于已抓取数据下载封面图片实体",
+    ),
+    ("export-excel [output_path]", "Export DB data to Excel", "导出 SQLite 数据到 Excel"),
+    (
+        "show | show-zh",
+        "Show settings with English or Chinese explanations",
+        "显示带英文或中文说明的参数列表",
+    ),
+    ("set <key> <value>", "Update setting (use 'none' for null)", "修改配置（null/none 表示空值）"),
+    ("reset", "Reset settings to defaults", "重置为默认配置"),
+    (
+        "stop",
+        "Request stop for the current background crawl/download task",
+        "请求停止当前后台抓取/下载任务",
+    ),
+    ("help | help-zh", "Show help in English or Chinese", "显示英文或中文释义帮助"),
+    ("clear-db", "Delete all rows from all SQLite tables", "清空所有 SQLite 业务表中的数据并保留表结构"),
+    ("exit | quit", "Exit interactive shell", "退出交互模式"),
+)
+INTERACTIVE_HELP_EXAMPLES_EN = (
+    "crawl",
+    "search-slug Elden Ring",
+    "crawl-one the-legend-of-zelda-breath-of-the-wild",
+    "crawl-reviews",
+    "show",
+    "set concurrency 4",
+    "sync-slugs",
+    "download-covers",
+    "export-excel data/excel/gamecritic_export.xlsx",
+)
+INTERACTIVE_HELP_EXAMPLES_ZH = (
+    "crawl",
+    "search-slug Elden Ring",
+    "crawl-one the-legend-of-zelda-breath-of-the-wild",
+    "crawl-reviews",
+    "show-zh",
+    "set concurrency 4",
+    "sync-slugs",
+    "download-covers",
+    "export-excel data/excel/gamecritic_export.xlsx",
+)
+INTERACTIVE_SETTINGS_DISPLAY_ORDER = (
+    "db",
+    "concurrency",
+    "include_critic_reviews",
+    "include_user_reviews",
+    "review_page_size",
+    "max_review_pages",
+    "download_covers",
+    "covers_dir",
+    "overwrite_covers",
+    "timeout",
+    "max_retries",
+    "backoff",
+    "delay",
+    "export_output",
+)
 LOG_BULLET = "●"
 LOG_FORMAT = f"{LOG_BULLET} %(log_header)s%(progress_display)s - %(message)s"
 _LOG_COMMAND_CONTEXT: ContextVar[str] = ContextVar("log_command_context", default="command")
@@ -1146,67 +1221,32 @@ def _convert_setting_value(key: str, raw_value: str) -> object:
     raise KeyError(f"unknown setting key: {key}")
 
 
+def _build_interactive_help_lines(language: str = "en") -> list[str]:
+    heading = "Interactive commands:" if language == "en" else "交互命令（中文释义）:"
+    examples_heading = "Examples:" if language == "en" else "示例:"
+    examples = INTERACTIVE_HELP_EXAMPLES_EN if language == "en" else INTERACTIVE_HELP_EXAMPLES_ZH
+    lines = [heading]
+    for command, english, chinese in INTERACTIVE_HELP_COMMANDS:
+        description = english if language == "en" else chinese
+        lines.append(f"  {command.ljust(INTERACTIVE_HELP_LABEL_WIDTH)} {description}")
+    lines.append("")
+    lines.append(examples_heading)
+    lines.extend(f"  {example}" for example in examples)
+    return lines
+
+
 def _print_interactive_help() -> str:
-    lines = [
-        "Interactive commands:",
-        "  help | help-zh                    Show help in English or Chinese",
-        "  show | show-zh                    Show settings with English or Chinese explanations",
-        "  clear-db                          Delete all rows from all SQLite tables",
-        "  set <key> <value>                 Update setting (use 'none' for null)",
-        "  reset                             Reset settings to defaults",
-        "  stop                              Request stop for the current background crawl/download task",
-        "  crawl                             Run crawl with current settings",
-        "  crawl-one <slug>                  Crawl one game with current settings",
-        "  search-slug <game_name>           Search the best-matching local slug by game name",
-        "  crawl-reviews                     Backfill both critic and user reviews for games in SQLite",
-        "  download-covers [output_dir]      Download cover image files from DB",
-        "  sync-slugs                        Sync sitemap slugs into SQLite",
-        "  export-excel [output_path]        Export DB data to Excel",
-        "  exit | quit                       Exit interactive shell",
-        "",
-        "Examples:",
-        "  set db data/gamecritic.db",
-        "  set concurrency 4",
-        "  set download_covers true",
-        "  crawl",
-        "  crawl-reviews",
-        "  sync-slugs",
-        "  download-covers",
-        "  search-slug Elden Ring",
-        "  crawl-one the-legend-of-zelda-breath-of-the-wild",
-    ]
-    return "\n".join(lines)
+    return "\n".join(_build_interactive_help_lines())
 
 
 def _print_interactive_help_zh() -> str:
-    lines = [
-        "交互命令（中文释义）:",
-        "  help | help-zh                    显示英文或中文释义帮助",
-        "  show | show-zh                    显示带英文或中文说明的参数列表",
-        "  clear-db                          清空所有 SQLite 业务表中的数据并保留表结构",
-        "  set <key> <value>                 修改配置（null/none 表示空值）",
-        "  reset                             重置为默认配置",
-        "  stop                              请求停止当前后台抓取/下载任务",
-        "  crawl                             用当前配置执行批量抓取",
-        "  crawl-one <slug>                  抓取单个游戏",
-        "  search-slug <game_name>           根据游戏名搜索本地最匹配的 slug",
-        "  crawl-reviews                     为 SQLite 中已有游戏补抓媒体和用户评论",
-        "  download-covers [output_dir]      基于已抓取数据下载封面图片实体",
-        "  sync-slugs                        将 sitemap 中的 slug 同步到 SQLite",
-        "  export-excel [output_path]        导出 SQLite 数据到 Excel",
-        "  exit | quit                       退出交互模式",
-        "",
-        "示例:",
-        "  help-zh",
-        "  set concurrency 4",
-        "  crawl",
-        "  crawl-reviews",
-        "  sync-slugs",
-        "  download-covers",
-        "  search-slug Elden Ring",
-        "  export-excel data/excel/gamecritic_export.xlsx",
-    ]
-    return "\n".join(lines)
+    return "\n".join(_build_interactive_help_lines("zh"))
+
+
+def _ordered_setting_keys(settings: dict[str, object]) -> list[str]:
+    ordered_keys = [key for key in INTERACTIVE_SETTINGS_DISPLAY_ORDER if key in settings]
+    ordered_keys.extend(sorted(key for key in settings if key not in INTERACTIVE_SETTINGS_DISPLAY_ORDER))
+    return ordered_keys
 
 
 def _setting_explanations_en() -> dict[str, str]:
@@ -1232,7 +1272,7 @@ def _format_settings(settings: dict[str, object]) -> str:
     explanations = _setting_explanations_en()
     return "\n".join(
         f"{key} = {settings[key]}  # {explanations.get(key, 'Explanation pending')}"
-        for key in sorted(settings)
+        for key in _ordered_setting_keys(settings)
     )
 
 
@@ -1259,7 +1299,7 @@ def _format_settings_zh(settings: dict[str, object]) -> str:
     explanations = _setting_explanations_zh()
     return "\n".join(
         f"{key} = {settings[key]}  # {explanations.get(key, '参数说明待补充')}"
-        for key in sorted(settings)
+        for key in _ordered_setting_keys(settings)
     )
 
 
@@ -1363,13 +1403,13 @@ def _interactive_welcome_rows() -> list[tuple[str, str, str | None]]:
         ("subtitle", "Crawl games, export Excel, and sync cover assets from one shell.", None),
         ("blank", "", None),
         ("section", "Quick Start", None),
-        ("item", "help or help-zh", "Show English or Chinese help and usage examples"),
+        ("item", "crawl", "Run a crawl with the current settings"),
+        ("item", "search-slug <game_name>", "Resolve a game name to the best local slug match"),
+        ("item", "crawl-one <slug>", "Fetch one game immediately"),
+        ("item", "crawl-reviews", "Backfill reviews for games already stored in SQLite"),
         ("item", "show", "Inspect the active configuration"),
         ("item", "stop", "Request stop for the current background crawl/download task"),
-        ("item", "crawl", "Run a crawl with the current settings"),
-        ("item", "crawl-one <slug>", "Fetch one game immediately"),
-        ("item", "search-slug <game_name>", "Resolve a game name to the best local slug match"),
-        ("item", "crawl-reviews", "Backfill reviews for games already stored in SQLite"),
+        ("item", "help or help-zh", "Show English or Chinese help and usage examples"),
         ("blank", "", None),
         ("section", "Input Tips", None),
         ("item", "Enter", "Submit the current command"),
