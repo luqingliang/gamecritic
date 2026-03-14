@@ -90,20 +90,20 @@ gamecritic
 # 进入交互模式
 gamecritic interactive
 
-# 将 sitemap 中的全部 slug 同步到 SQLite
-gamecritic sync-slugs
+# 抓取 `game_slugs` 表中的全部 slug
+gamecritic crawl
 
 # 按游戏名称在本地 slug 索引里查找最佳匹配
 gamecritic search-slug "The Legend of Zelda Breath of the Wild"
-
-# 抓取 `game_slugs` 表中的全部 slug
-gamecritic crawl
 
 # 按 slug 抓取单个游戏
 gamecritic crawl-one the-legend-of-zelda-breath-of-the-wild
 
 # 为 `games` 表中已保存的游戏补抓评论
 gamecritic crawl-reviews
+
+# 将 sitemap 中的全部 slug 同步到 SQLite
+gamecritic sync-slugs
 
 # 基于已抓取游戏信息批量下载封面图片实体
 gamecritic download-covers

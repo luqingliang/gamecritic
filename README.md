@@ -92,20 +92,20 @@ Parameter reference:
 # Open the interactive shell
 gamecritic interactive
 
-# Sync all sitemap slugs into SQLite
-gamecritic sync-slugs
+# Crawl all stored slugs from `game_slugs`
+gamecritic crawl
 
 # Search the local slug index by game name
 gamecritic search-slug "The Legend of Zelda Breath of the Wild"
-
-# Crawl all stored slugs from `game_slugs`
-gamecritic crawl
 
 # Crawl one game by slug
 gamecritic crawl-one the-legend-of-zelda-breath-of-the-wild
 
 # Backfill reviews for games already stored in `games`
 gamecritic crawl-reviews
+
+# Sync all sitemap slugs into SQLite
+gamecritic sync-slugs
 
 # Batch download cover image files from already crawled games
 gamecritic download-covers

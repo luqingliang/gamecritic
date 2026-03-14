@@ -29,6 +29,7 @@ from gamecritic.cli import (
     _interactive_game_slugs_status_text,
     _interactive_help_hint_text,
     _interactive_title_art_lines,
+    _interactive_welcome_rows,
     _interactive_defaults,
     _load_shared_settings,
     _logging_command_context,
@@ -371,6 +372,40 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("clear-db", output[0])
         self.assertIn("current background crawl/download task", output[0])
 
+    def test_help_command_prioritizes_core_workflow_commands(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+        keep_running = _run_interactive_command(["help"], settings, output.append)
+
+        self.assertTrue(keep_running)
+        self.assertTrue(output)
+
+        command_labels: list[str] = []
+        for line in output[0].splitlines()[1:]:
+            if not line.strip():
+                break
+            command_labels.append(next(part for part in line.strip().split("  ") if part))
+
+        self.assertEqual(
+            command_labels,
+            [
+                "crawl",
+                "search-slug <game_name>",
+                "crawl-one <slug>",
+                "crawl-reviews",
+                "sync-slugs",
+                "download-covers [output_dir]",
+                "export-excel [output_path]",
+                "show | show-zh",
+                "set <key> <value>",
+                "reset",
+                "stop",
+                "help | help-zh",
+                "clear-db",
+                "exit | quit",
+            ],
+        )
+
     def test_show_zh_command(self) -> None:
         settings = _interactive_defaults()
         output: list[str] = []
@@ -391,6 +426,17 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(output)
         self.assertIn("db = data/gamecritic.db", output[0])
         self.assertIn("SQLite 数据库文件路径", output[0])
+        self.assertEqual(
+            [line.split(" = ", 1)[0] for line in output[0].splitlines()[:6]],
+            [
+                "db",
+                "concurrency",
+                "include_critic_reviews",
+                "include_user_reviews",
+                "review_page_size",
+                "max_review_pages",
+            ],
+        )
 
     def test_show_command_includes_english_explanations(self) -> None:
         settings = _interactive_defaults()
@@ -402,6 +448,25 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("concurrency = 4", output[0])
         self.assertIn("Number of concurrent crawl workers", output[0])
         self.assertIn("Whether to also crawl critic reviews while fetching game data", output[0])
+        self.assertEqual(
+            [line.split(" = ", 1)[0] for line in output[0].splitlines()],
+            [
+                "db",
+                "concurrency",
+                "include_critic_reviews",
+                "include_user_reviews",
+                "review_page_size",
+                "max_review_pages",
+                "download_covers",
+                "covers_dir",
+                "overwrite_covers",
+                "timeout",
+                "max_retries",
+                "backoff",
+                "delay",
+                "export_output",
+            ],
+        )
 
     def test_config_alias_includes_english_explanations(self) -> None:
         settings = _interactive_defaults()
@@ -1007,6 +1072,21 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("search-slug <game_name>", banner_text)
         self.assertIn("crawl-reviews", banner_text)
         self.assertIn("Up / Down", banner_text)
+
+    def test_interactive_welcome_rows_prioritize_core_commands(self) -> None:
+        quick_start_labels = [label for kind, label, _ in _interactive_welcome_rows() if kind == "item"][:7]
+        self.assertEqual(
+            quick_start_labels,
+            [
+                "crawl",
+                "search-slug <game_name>",
+                "crawl-one <slug>",
+                "crawl-reviews",
+                "show",
+                "stop",
+                "help or help-zh",
+            ],
+        )
 
     def test_interactive_title_art_lines(self) -> None:
         lines = _interactive_title_art_lines()
