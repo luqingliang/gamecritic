@@ -95,6 +95,23 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertEqual(captured.get("command"), "crawl-one")
         self.assertTrue(captured.get("print_summary"))
 
+    def test_interactive_crawl_one_refreshes_status_after_completion(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+        refresh_calls: list[str] = []
+
+        with patch("gamecritic.cli._run_with_captured_stdout") as run_mock:
+            keep_running = _run_interactive_command(
+                ["crawl-one", "demo-game"],
+                settings,
+                output.append,
+                refresh_game_slugs_status=lambda: refresh_calls.append("refreshed"),
+            )
+
+        self.assertTrue(keep_running)
+        run_mock.assert_called_once()
+        self.assertEqual(refresh_calls, ["refreshed"])
+
     def test_run_with_captured_stdout_streams_lines(self) -> None:
         output: list[str] = []
 
@@ -670,6 +687,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             captured["covers_dir"] = getattr(namespace, "covers_dir", None)
             captured["slug"] = getattr(namespace, "slug", None)
             captured["overwrite"] = getattr(namespace, "overwrite", None)
+            captured["print_summary"] = getattr(namespace, "print_summary", None)
             emit("[done] exit_code=0")
 
         with patch("gamecritic.cli._run_with_captured_stdout", side_effect=_fake_run_with_captured_stdout):
@@ -681,6 +699,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertEqual(captured.get("covers_dir"), "data/custom-covers")
         self.assertIsNone(captured.get("slug"))
         self.assertFalse(captured.get("overwrite"))
+        self.assertTrue(captured.get("print_summary"))
 
     def test_interactive_download_covers_accepts_slug(self) -> None:
         settings = _interactive_defaults()
@@ -698,6 +717,23 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_download_covers")
         self.assertEqual(captured.get("slug"), "demo-game")
+
+    def test_interactive_download_covers_refreshes_status_after_completion(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+        refresh_calls: list[str] = []
+
+        with patch("gamecritic.cli._run_with_captured_stdout") as run_mock:
+            keep_running = _run_interactive_command(
+                ["download-covers", "demo-game"],
+                settings,
+                output.append,
+                refresh_game_slugs_status=lambda: refresh_calls.append("refreshed"),
+            )
+
+        self.assertTrue(keep_running)
+        run_mock.assert_called_once()
+        self.assertEqual(refresh_calls, ["refreshed"])
 
     def test_interactive_download_covers_rejects_extra_args(self) -> None:
         settings = _interactive_defaults()
@@ -819,6 +855,23 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_crawl_reviews")
         self.assertEqual(captured.get("slug"), "demo-game")
+
+    def test_interactive_crawl_reviews_refreshes_status_after_completion(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+        refresh_calls: list[str] = []
+
+        with patch("gamecritic.cli._run_with_captured_stdout") as run_mock:
+            keep_running = _run_interactive_command(
+                ["crawl-reviews", "demo-game"],
+                settings,
+                output.append,
+                refresh_game_slugs_status=lambda: refresh_calls.append("refreshed"),
+            )
+
+        self.assertTrue(keep_running)
+        run_mock.assert_called_once()
+        self.assertEqual(refresh_calls, ["refreshed"])
 
     def test_interactive_crawl_reviews_rejects_extra_args(self) -> None:
         settings = _interactive_defaults()
@@ -1004,6 +1057,44 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         )
         storage.close.assert_called_once()
 
+    def test_run_crawl_reviews_logs_games_crawled_and_prints_summary(self) -> None:
+        args = _build_crawl_reviews_namespace(
+            _interactive_defaults(),
+            print_summary=True,
+        )
+
+        storage = MagicMock()
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = None
+        scraper = MagicMock()
+        scraper.crawl_reviews_from_games.return_value = CrawlResult(
+            slugs_processed=1,
+            games_crawled=1,
+            critic_reviews_saved=2,
+            user_reviews_saved=3,
+        )
+
+        with patch("gamecritic.cli.SQLiteStorage", return_value=storage), patch(
+            "gamecritic.cli._build_client",
+            return_value=client,
+        ), patch(
+            "gamecritic.cli.MetacriticScraper",
+            return_value=scraper,
+        ), self.assertLogs(level="INFO") as captured, patch("builtins.print") as print_mock:
+            exit_code = run_crawl_reviews(args)
+
+        self.assertEqual(exit_code, 0)
+        messages = [record.getMessage() for record in captured.records]
+        self.assertIn(
+            "crawl-reviews finished processed=1 games_crawled=1 critic_reviews=2 user_reviews=3 failed=0",
+            messages,
+        )
+        print_mock.assert_called_once_with(
+            "crawl-reviews summary: processed=1 games_crawled=1 critic_reviews=2 user_reviews=3 failed=0"
+        )
+        storage.close.assert_called_once()
+
     def test_run_download_covers_returns_130_when_fetch_is_interrupted(self) -> None:
         args = _build_download_covers_namespace(
             _interactive_defaults(),
@@ -1038,19 +1129,155 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         )
 
         storage = MagicMock()
-        storage.list_game_cover_urls.return_value = []
+        storage.list_game_cover_urls.return_value = [("demo-game", "https://cdn.example.com/path/cover.jpg")]
         client = MagicMock()
         client.__enter__.return_value = client
         client.__exit__.return_value = None
+        downloader = MagicMock()
+        downloader.download.return_value = "downloaded"
 
         with patch("gamecritic.cli.SQLiteStorage", return_value=storage), patch(
             "gamecritic.cli._build_client",
             return_value=client,
+        ), patch(
+            "gamecritic.cli.CoverImageDownloader",
+            return_value=downloader,
         ):
             exit_code = run_download_covers(args)
 
         self.assertEqual(exit_code, 0)
         storage.list_game_cover_urls.assert_called_once_with(slug="demo-game")
+        storage.close.assert_called_once()
+
+    def test_run_download_covers_crawls_and_persists_missing_requested_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            covers_dir = Path(tmpdir) / "covers"
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            settings["covers_dir"] = str(covers_dir)
+            args = _build_download_covers_namespace(settings, slug="missing-game", print_summary=True)
+
+            storage = SQLiteStorage(db_path)
+            storage.close()
+
+            class _ClientWithFallbackCover:
+                def fetch_product(self, slug: str) -> dict:
+                    return {"data": {"item": {"id": 1, "title": slug, "platform": "PC"}}}
+
+                def resolve_cover_url(self, *, product_payload: dict) -> str | None:
+                    del product_payload
+                    return "https://cdn.example.com/path/missing-game.jpg"
+
+                def fetch_score_summary(self, slug: str, review_type: str) -> dict | None:
+                    del slug, review_type
+                    return None
+
+                def fetch_binary(self, url: str) -> bytes:
+                    self.fetch_binary_calls.append(url)
+                    return b"cover-bytes"
+
+                def __enter__(self):
+                    self.fetch_binary_calls: list[str] = []
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return None
+
+            client = _ClientWithFallbackCover()
+
+            with patch("gamecritic.cli._build_client", return_value=client), patch("builtins.print") as print_mock:
+                exit_code = run_download_covers(args)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(client.fetch_binary_calls, ["https://cdn.example.com/path/missing-game.jpg"])
+            self.assertEqual((covers_dir / "missing-game.jpg").read_bytes(), b"cover-bytes")
+
+            verify_storage = SQLiteStorage(db_path)
+            try:
+                self.assertEqual(verify_storage.count_rows("games"), 1)
+                self.assertEqual(
+                    verify_storage.list_game_cover_urls(slug="missing-game"),
+                    [("missing-game", "https://cdn.example.com/path/missing-game.jpg")],
+                )
+            finally:
+                verify_storage.close()
+
+            print_mock.assert_called_once_with(
+                "download-covers summary: total=1 games_crawled=1 downloaded=1 skipped=0 failed=0"
+            )
+
+    def test_run_download_covers_logs_each_cover_status(self) -> None:
+        args = _build_download_covers_namespace(_interactive_defaults())
+
+        storage = MagicMock()
+        storage.list_game_cover_urls.return_value = [
+            ("demo-a", "https://cdn.example.com/path/a.jpg"),
+            ("demo-b", "https://cdn.example.com/path/b.jpg"),
+            ("demo-c", "https://cdn.example.com/path/c.jpg"),
+        ]
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = None
+        downloader = MagicMock()
+        downloader.download.side_effect = ["downloaded", "skipped", "failed"]
+
+        with patch("gamecritic.cli.SQLiteStorage", return_value=storage), patch(
+            "gamecritic.cli._build_client",
+            return_value=client,
+        ), patch(
+            "gamecritic.cli.CoverImageDownloader",
+            return_value=downloader,
+        ), self.assertLogs(level="INFO") as captured:
+            exit_code = run_download_covers(args)
+
+        self.assertEqual(exit_code, 2)
+        messages = [record.getMessage() for record in captured.records]
+        self.assertIn(
+            "cover download slug=demo-a status=downloaded cover_url=https://cdn.example.com/path/a.jpg",
+            messages,
+        )
+        self.assertIn(
+            "cover download slug=demo-b status=skipped cover_url=https://cdn.example.com/path/b.jpg",
+            messages,
+        )
+        self.assertIn(
+            "cover download slug=demo-c status=failed cover_url=https://cdn.example.com/path/c.jpg",
+            messages,
+        )
+        self.assertIn(
+            "download-covers finished total=3 games_crawled=0 downloaded=1 skipped=1 failed=1 covers_dir=data/covers",
+            messages,
+        )
+        storage.close.assert_called_once()
+
+    def test_run_download_covers_prints_summary_when_enabled(self) -> None:
+        args = _build_download_covers_namespace(_interactive_defaults(), print_summary=True)
+
+        storage = MagicMock()
+        storage.list_game_cover_urls.return_value = [
+            ("demo-a", "https://cdn.example.com/path/a.jpg"),
+            ("demo-b", "https://cdn.example.com/path/b.jpg"),
+        ]
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.__exit__.return_value = None
+        downloader = MagicMock()
+        downloader.download.side_effect = ["downloaded", "skipped"]
+
+        with patch("gamecritic.cli.SQLiteStorage", return_value=storage), patch(
+            "gamecritic.cli._build_client",
+            return_value=client,
+        ), patch(
+            "gamecritic.cli.CoverImageDownloader",
+            return_value=downloader,
+        ), patch("builtins.print") as print_mock:
+            exit_code = run_download_covers(args)
+
+        self.assertEqual(exit_code, 0)
+        print_mock.assert_called_once_with(
+            "download-covers summary: total=2 games_crawled=0 downloaded=1 skipped=1 failed=0"
+        )
         storage.close.assert_called_once()
 
     def test_run_clear_db_prints_summary_and_closes_storage(self) -> None:
@@ -1106,6 +1333,34 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("search-slug matching candidates", messages)
         self.assertIn("search-slug selecting result", messages)
         self.assertIn("search-slug matched slug=elden-ring", messages)
+
+    def test_run_search_slug_matches_slug_only_abbreviation_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game_slugs(
+                    [
+                        (
+                            "grand-theft-auto-v",
+                            "https://example.com/games/grand-theft-auto-v",
+                            "https://example.com/sitemaps/games.xml",
+                        )
+                    ]
+                )
+            finally:
+                storage.close()
+
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+
+            for query in ("GTA", "GTA V"):
+                args = _build_search_slug_namespace(settings, query=query)
+                with self.subTest(query=query), patch("builtins.print") as print_mock:
+                    exit_code = run_search_slug(args)
+
+                self.assertEqual(exit_code, 0)
+                print_mock.assert_called_once_with("grand-theft-auto-v")
 
     def test_run_search_slug_prints_candidate_list_when_ambiguous(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1516,6 +1771,35 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             ],
         )
 
+    def test_style_output_line_for_download_covers_summary(self) -> None:
+        fragments = _style_output_line("download-covers summary: total=20 games_crawled=1 downloaded=18 skipped=2 failed=0")
+        self.assertEqual(
+            fragments,
+            [
+                ("class:summary.label", "download-covers summary:"),
+                ("", " "),
+                ("class:summary.key", "total"),
+                ("", "="),
+                ("class:summary.value", "20"),
+                ("", " "),
+                ("class:summary.key", "games_crawled"),
+                ("", "="),
+                ("class:summary.value", "1"),
+                ("", " "),
+                ("class:summary.key", "downloaded"),
+                ("", "="),
+                ("class:summary.value", "18"),
+                ("", " "),
+                ("class:summary.key", "skipped"),
+                ("", "="),
+                ("class:summary.value", "2"),
+                ("", " "),
+                ("class:summary.key", "failed"),
+                ("", "="),
+                ("class:summary.value", "0"),
+            ],
+        )
+
     def test_style_output_line_for_warning_log(self) -> None:
         line = "● crawl-WARNING - failed slugs: demo"
         fragments = _style_output_line(line)
@@ -1541,15 +1825,18 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         )
 
     def test_style_output_line_for_cover_download_log(self) -> None:
-        line = "● download-covers - download-covers finished total=20 downloaded=18 skipped=2 failed=0 covers_dir=data/covers"
+        line = (
+            "● download-covers - download-covers finished total=20 games_crawled=1 "
+            "downloaded=18 skipped=2 failed=0 covers_dir=data/covers"
+        )
         fragments = _style_output_line(line)
         self.assertEqual(
             fragments,
             [
                 ("class:log.bullet", "● "),
                 (
-                    "class:log.cover",
-                    "download-covers - download-covers finished total=20 downloaded=18 skipped=2 failed=0 covers_dir=data/covers",
+                    "",
+                    "download-covers - download-covers finished total=20 games_crawled=1 downloaded=18 skipped=2 failed=0 covers_dir=data/covers",
                 ),
             ],
         )

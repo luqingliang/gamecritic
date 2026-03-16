@@ -200,6 +200,75 @@ class FullCrawlSourceTestCase(unittest.TestCase):
             finally:
                 storage.close()
 
+    def test_crawl_reviews_from_games_crawls_and_persists_missing_requested_slug(self) -> None:
+        class _ClientWithFallbackCrawl:
+            def fetch_product(self, slug: str) -> dict:
+                return {"data": {"item": {"id": 101, "title": slug, "platform": "PC"}}}
+
+            def resolve_cover_url(self, *, product_payload: dict) -> str | None:
+                del product_payload
+                return None
+
+            def fetch_score_summary(self, slug: str, review_type: str) -> dict | None:
+                del slug, review_type
+                return None
+
+            def iter_reviews(
+                self,
+                *,
+                slug: str,
+                review_type: str,
+                page_size: int = 50,
+                max_pages: int | None = None,
+            ):
+                del page_size, max_pages
+                if review_type == "critic":
+                    yield {
+                        "publicationSlug": "edge",
+                        "publicationName": "Edge",
+                        "date": "2026-03-10",
+                        "score": 90,
+                        "url": f"https://example.com/{slug}/critic-review",
+                        "quote": "excellent",
+                        "author": "Critic A",
+                    }
+                    return
+                yield {
+                    "id": f"{slug}-user-review-1",
+                    "author": "UserA",
+                    "score": 9,
+                    "date": "2026-03-10",
+                    "spoiler": False,
+                    "quote": "great",
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                scraper = MetacriticScraper(_ClientWithFallbackCrawl(), storage)
+
+                result = scraper.crawl_reviews_from_games(
+                    slug="missing-game",
+                    include_critic_reviews=True,
+                    include_user_reviews=True,
+                    review_page_size=50,
+                    max_review_pages=1,
+                    concurrency=1,
+                )
+
+                self.assertEqual(result.games_crawled, 1)
+                self.assertEqual(result.critic_reviews_saved, 1)
+                self.assertEqual(result.user_reviews_saved, 1)
+                self.assertEqual(result.failed_slugs, [])
+                self.assertFalse(result.stopped)
+                self.assertEqual(storage.list_crawled_game_slugs(slug="missing-game"), ["missing-game"])
+                self.assertEqual(storage.count_rows("games"), 1)
+                self.assertEqual(storage.count_rows("critic_reviews"), 1)
+                self.assertEqual(storage.count_rows("user_reviews"), 1)
+            finally:
+                storage.close()
+
     def test_crawl_reviews_for_slug_fetches_reviews_without_product_request(self) -> None:
         class _ClientReviewsOnly:
             def __init__(self) -> None:
