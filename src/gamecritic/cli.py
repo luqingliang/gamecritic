@@ -29,6 +29,7 @@ from .cover_downloader import CoverImageDownloader
 from .exporter import export_sqlite_to_excel
 from .scraper import MetacriticScraper
 from .storage import APP_TABLE_NAMES, SQLiteStorage, load_slug_search_candidates_from_db
+from .web_service import GamecriticWebService, WebServiceConfig
 
 DEFAULT_QUICKSTART_MAX_REVIEW_PAGES = 1
 DEFAULT_CONCURRENCY = 4
@@ -47,9 +48,10 @@ INTERACTIVE_BACKGROUND_COMMANDS = {
     "sync-slugs",
     "download-covers",
     "export-excel",
+    "serve",
     "clear-db",
 }
-INTERACTIVE_STOPPABLE_COMMANDS = {"crawl", "crawl-one", "crawl-reviews", "sync-slugs", "download-covers"}
+INTERACTIVE_STOPPABLE_COMMANDS = {"crawl", "crawl-one", "crawl-reviews", "sync-slugs", "download-covers", "serve"}
 INTERACTIVE_HELP_LABEL_WIDTH = 34
 INTERACTIVE_HELP_TITLE_EN = "Interactive Help"
 INTERACTIVE_HELP_TITLE_ZH = "交互帮助"
@@ -79,6 +81,7 @@ INTERACTIVE_HELP_SECTIONS = (
                 "基于已抓取数据下载封面图片实体",
             ),
             ("export-excel [output_path]", "Export DB data to Excel", "导出 SQLite 数据到 Excel"),
+            ("serve", "Start the local HTTP API service", "启动本地 HTTP API 服务"),
         ),
     ),
     (
@@ -94,8 +97,8 @@ INTERACTIVE_HELP_SECTIONS = (
             ("reset", "Reset settings to defaults", "重置为默认配置"),
             (
                 "stop",
-                "Request stop for the current background crawl/download task",
-                "请求停止当前后台抓取/下载任务",
+                "Request stop for the current background task or web service",
+                "请求停止当前后台任务或 Web 服务",
             ),
         ),
     ),
@@ -121,6 +124,7 @@ INTERACTIVE_HELP_EXAMPLES_EN = (
     "sync-slugs",
     "download-covers",
     "export-excel data/excel/gamecritic_export.xlsx",
+    "serve",
 )
 INTERACTIVE_HELP_EXAMPLES_ZH = (
     "crawl",
@@ -132,6 +136,7 @@ INTERACTIVE_HELP_EXAMPLES_ZH = (
     "sync-slugs",
     "download-covers",
     "export-excel data/excel/gamecritic_export.xlsx",
+    "serve",
 )
 INTERACTIVE_SETTINGS_DISPLAY_ORDER = (
     "db",
@@ -148,16 +153,18 @@ INTERACTIVE_SETTINGS_DISPLAY_ORDER = (
     "backoff",
     "delay",
     "export_output",
+    "server_host",
+    "server_port",
 )
 INTERACTIVE_HELP_SAMPLE_SIZE = 3
 LOG_BULLET = "●"
 LOG_FORMAT = f"{LOG_BULLET} %(log_header)s%(progress_display)s - %(message)s"
 _LOG_COMMAND_CONTEXT: ContextVar[str] = ContextVar("log_command_context", default="command")
 _BOOL_SETTING_KEYS = {"include_critic_reviews", "include_user_reviews", "download_covers", "overwrite_covers"}
-_INT_SETTING_KEYS = {"review_page_size", "concurrency", "max_retries"}
+_INT_SETTING_KEYS = {"review_page_size", "concurrency", "max_retries", "server_port"}
 _FLOAT_SETTING_KEYS = {"timeout", "backoff", "delay"}
 _OPTIONAL_INT_SETTING_KEYS = {"max_review_pages"}
-_STRING_SETTING_KEYS = {"db", "export_output", "covers_dir"}
+_STRING_SETTING_KEYS = {"db", "export_output", "covers_dir", "server_host"}
 _SEARCH_SLUG_AUTO_ACCEPT_SCORE = 0.92
 _SEARCH_SLUG_AMBIGUITY_MARGIN = 0.03
 _SEARCH_SLUG_MIN_SCORE = 0.55
@@ -247,6 +254,10 @@ def build_parser() -> argparse.ArgumentParser:
         "export-excel",
         help="Export crawled SQLite data using the shared settings profile.",
     )
+    subparsers.add_parser(
+        "serve",
+        help="Start the HTTP API service using the shared settings profile.",
+    )
     download_covers = subparsers.add_parser(
         "download-covers",
         help="Download cover image files using the shared settings profile.",
@@ -294,13 +305,17 @@ def _check_stop_requested(stop_event: threading.Event | None) -> None:
         raise InterruptedError("stopped by user")
 
 
-def _build_client(args: argparse.Namespace) -> MetacriticClient:
+def _build_client(
+    args: argparse.Namespace,
+    *,
+    stop_event: threading.Event | None = None,
+) -> MetacriticClient:
     return MetacriticClient(
         timeout_seconds=args.timeout,
         max_retries=args.max_retries,
         backoff_seconds=args.backoff,
         delay_seconds=args.delay,
-        stop_event=_get_stop_event(args),
+        stop_event=stop_event if stop_event is not None else _get_stop_event(args),
     )
 
 
@@ -963,6 +978,72 @@ def run_export_excel(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_serve(args: argparse.Namespace) -> int:
+    host = str(args.host).strip()
+    if not host:
+        raise SystemExit("server_host must be a non-empty string")
+    if int(args.port) < 0 or int(args.port) > 65535:
+        raise SystemExit("server_port must be between 0 and 65535")
+    stop_event = _get_stop_event(args)
+    service_stop_event = stop_event if stop_event is not None else threading.Event()
+
+    service: GamecriticWebService | None = None
+    service = GamecriticWebService(
+        db_path=args.db,
+        config=WebServiceConfig(
+            host=host,
+            port=int(args.port),
+            include_critic_reviews=bool(getattr(args, "include_critic_reviews", False)),
+            include_user_reviews=bool(getattr(args, "include_user_reviews", False)),
+            review_page_size=int(args.review_page_size),
+            max_review_pages=args.max_review_pages,
+        ),
+        client_factory=lambda: _build_client(args, stop_event=service_stop_event),
+        stop_event=service_stop_event,
+    )
+    stop_watcher: threading.Thread | None = None
+    stop_watcher_done = threading.Event()
+    try:
+        bound_host, bound_port = service.server_address
+        if stop_event is not None:
+            def _watch_for_stop() -> None:
+                while not stop_watcher_done.is_set():
+                    if stop_event.wait(0.1):
+                        logging.info("web service stop requested on http://%s:%d", bound_host, bound_port)
+                        service.shutdown()
+                        return
+
+            watcher_context = copy_context()
+            stop_watcher = threading.Thread(
+                target=watcher_context.run,
+                args=(_watch_for_stop,),
+                name="web-service-stop",
+                daemon=True,
+            )
+            stop_watcher.start()
+        logging.info(
+            "web service listening on http://%s:%d game_endpoint=/api/game?slug=<slug> reviews_endpoint=/api/reviews?slug=<slug>",
+            bound_host,
+            bound_port,
+        )
+        try:
+            service.serve_forever()
+        except KeyboardInterrupt:
+            service.shutdown()
+            logging.info("web service stopping on http://%s:%d", bound_host, bound_port)
+            return 130
+        if stop_event is not None and stop_event.is_set():
+            logging.info("web service stopped on http://%s:%d", bound_host, bound_port)
+            return 130
+        return 0
+    finally:
+        stop_watcher_done.set()
+        if stop_watcher is not None and stop_watcher is not threading.current_thread():
+            stop_watcher.join(timeout=0.2)
+        if service is not None:
+            service.close()
+
+
 def _download_covers_summary_text(
     *,
     total: int,
@@ -1185,6 +1266,8 @@ def _interactive_defaults() -> dict[str, object]:
         "covers_dir": "data/covers",
         "overwrite_covers": False,
         "export_output": "data/excel/gamecritic_export.xlsx",
+        "server_host": "127.0.0.1",
+        "server_port": 8000,
     }
 
 
@@ -1368,6 +1451,28 @@ def _build_export_excel_namespace(
     )
 
 
+def _build_serve_namespace(
+    settings: dict[str, object],
+    *,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="serve",
+        db=str(settings["db"]),
+        host=str(settings["server_host"]),
+        port=int(settings["server_port"]),
+        include_critic_reviews=bool(settings["include_critic_reviews"]),
+        include_user_reviews=bool(settings["include_user_reviews"]),
+        review_page_size=int(settings["review_page_size"]),
+        max_review_pages=settings["max_review_pages"],
+        timeout=float(settings["timeout"]),
+        max_retries=int(settings["max_retries"]),
+        backoff=float(settings["backoff"]),
+        delay=float(settings["delay"]),
+        stop_event=stop_event,
+    )
+
+
 def _build_download_covers_namespace(
     settings: dict[str, object],
     *,
@@ -1481,6 +1586,8 @@ def _setting_explanations_en() -> dict[str, str]:
         "max_review_pages": "Maximum review pages per review type",
         "overwrite_covers": "Whether to overwrite existing cover image files",
         "review_page_size": "Review API page size",
+        "server_host": "HTTP service bind host",
+        "server_port": "HTTP service bind port",
         "timeout": "HTTP timeout in seconds per request",
     }
 
@@ -1508,6 +1615,8 @@ def _setting_explanations_zh() -> dict[str, str]:
         "max_review_pages": "每类评论最多翻页数",
         "overwrite_covers": "下载封面时是否覆盖本地已有文件",
         "review_page_size": "评论接口每页抓取条数",
+        "server_host": "HTTP 服务监听地址",
+        "server_port": "HTTP 服务监听端口",
         "timeout": "单次 HTTP 请求超时秒数",
     }
 
@@ -1663,8 +1772,9 @@ def _interactive_welcome_rows() -> list[tuple[str, str, str | None]]:
         ("item", "search-slug <game_name>", "Resolve a game name to the best local slug match"),
         ("item", "crawl-one <slug>", "Fetch one game immediately"),
         ("item", "crawl-reviews [slug]", "Backfill reviews for games already stored in SQLite"),
+        ("item", "serve", "Start the local HTTP API service"),
         ("item", "show", "Inspect the active configuration"),
-        ("item", "stop", "Request stop for the current background crawl/download task"),
+        ("item", "stop", "Request stop for the current background task or web service"),
         ("item", "help or help-zh", "Show English or Chinese help and usage examples"),
         ("blank", "", None),
         ("section", "Input Tips", None),
@@ -2032,6 +2142,14 @@ def _run_interactive_command(
             _run_with_captured_stdout(run_export_excel, ns, emit)
             return True
 
+        if cmd == "serve":
+            if args:
+                emit("Usage: serve")
+                return True
+            ns = _build_serve_namespace(settings, stop_event=stop_event)
+            _run_with_captured_stdout(run_serve, ns, emit)
+            return True
+
         emit(f"Unknown command: {cmd}. Type 'help' or 'help-zh' for available commands.")
         return True
     except Exception as exc:  # pragma: no cover
@@ -2338,6 +2456,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "export-excel":
         with _logging_command_context(args.command):
             return run_export_excel(_build_export_excel_namespace(settings))
+    if args.command == "serve":
+        with _logging_command_context(args.command):
+            return run_serve(_build_serve_namespace(settings))
     if args.command == "download-covers":
         with _logging_command_context(args.command):
             return run_download_covers(_build_download_covers_namespace(settings, slug=args.slug))

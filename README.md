@@ -82,7 +82,13 @@ Parameter reference:
   "overwrite_covers": false,
 
   // Output path for Excel export
-  "export_output": "data/excel/gamecritic_export.xlsx"
+  "export_output": "data/excel/gamecritic_export.xlsx",
+
+  // HTTP service bind host
+  "server_host": "127.0.0.1",
+
+  // HTTP service bind port
+  "server_port": 8000
 }
 ```
 
@@ -119,9 +125,35 @@ gamecritic download-covers the-legend-of-zelda-breath-of-the-wild
 # Export SQLite data to Excel
 gamecritic export-excel
 
+# Start the HTTP API service
+gamecritic serve
+
 # Clear all project tables while keeping the schema
 gamecritic clear-db
 ```
+
+## HTTP API
+
+Start the local service:
+
+```bash
+gamecritic serve
+```
+
+The service root now serves a user-facing frontend:
+
+- `GET /`: Slug lookup homepage.
+- `GET /game/<slug>`: Deep link to one game's detail view.
+
+Available endpoints:
+
+- `GET /api/game?slug=<slug>`: Returns one game's stored data. If the row is missing from `games`, the service crawls it, stores it, and then returns the fresh record.
+- `GET /api/reviews?slug=<slug>`: Backfills critic + user reviews for the requested slug and returns the stored review payloads.
+
+Both endpoints also accept path-style variants:
+
+- `GET /api/games/<slug>`
+- `GET /api/games/<slug>/reviews`
 
 ## Data Schema
 

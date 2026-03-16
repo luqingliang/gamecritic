@@ -24,6 +24,7 @@ class CrawlResult:
     covers_skipped: int = 0
     covers_failed: int = 0
     failed_slugs: list[str] = field(default_factory=list)
+    review_failures: list[tuple[str, str]] = field(default_factory=list)
     stopped: bool = False
 
 
@@ -90,6 +91,7 @@ class MetacriticScraper:
         into.covers_skipped += one.covers_skipped
         into.covers_failed += one.covers_failed
         into.failed_slugs.extend(one.failed_slugs)
+        into.review_failures.extend(one.review_failures)
         into.stopped = into.stopped or one.stopped
 
     def _crawl_slugs(
@@ -318,6 +320,7 @@ class MetacriticScraper:
                         critic_buffer.clear()
             except MetacriticClientError as exc:
                 logger.warning("critic reviews unavailable for %s: %s", slug, exc)
+                result.review_failures.append((slug, "critic"))
             except InterruptedError:
                 result.stopped = True
                 return result
@@ -340,6 +343,7 @@ class MetacriticScraper:
                         user_buffer.clear()
             except MetacriticClientError as exc:
                 logger.warning("user reviews unavailable for %s: %s", slug, exc)
+                result.review_failures.append((slug, "user"))
             except InterruptedError:
                 result.stopped = True
                 return result
