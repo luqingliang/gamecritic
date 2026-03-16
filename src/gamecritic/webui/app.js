@@ -1,10 +1,11 @@
-const RECENT_SLUGS_KEY = "gamecritic_recent_slugs";
+const RECENT_GAMES_KEY = "gamecritic_recent_games";
 const INITIAL_VISIBLE_REVIEWS = 20;
 const REVIEW_INCREMENT = 20;
 
 const state = {
   slug: "",
   game: null,
+  search: { query: "", matches: [], total_matches: 0, selected: null, status: "idle" },
   reviews: { critic_reviews: [], user_reviews: [], counts: { critic_reviews: 0, user_reviews: 0 } },
   activeTab: "critic",
   visibleCritic: INITIAL_VISIBLE_REVIEWS,
@@ -20,6 +21,9 @@ const elements = {
   form: document.getElementById("slug-form"),
   input: document.getElementById("slug-input"),
   submitButton: document.getElementById("submit-button"),
+  searchPanel: document.getElementById("search-panel"),
+  searchMeta: document.getElementById("search-meta"),
+  searchResults: document.getElementById("search-results"),
   recentList: document.getElementById("recent-list"),
   clearRecent: document.getElementById("clear-recent"),
   emptyState: document.getElementById("empty-state"),
@@ -92,32 +96,46 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-function getRecentSlugs() {
+function getRecentGames() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(RECENT_SLUGS_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string" && item.trim()) : [];
+    const parsed = JSON.parse(localStorage.getItem(RECENT_GAMES_KEY) || "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item) => (
+      item
+      && typeof item === "object"
+      && typeof item.slug === "string"
+      && item.slug.trim()
+      && typeof item.title === "string"
+      && item.title.trim()
+    ));
   } catch {
     return [];
   }
 }
 
-function saveRecentSlug(slug) {
-  const normalized = normalizeSlug(slug);
-  if (!normalized) {
+function saveRecentGame(game) {
+  const slug = normalizeSlug(game && game.slug);
+  const title = normalizeSlug(game && game.title);
+  if (!slug || !title) {
     return;
   }
-  const next = [normalized, ...getRecentSlugs().filter((item) => item !== normalized)].slice(0, 8);
-  localStorage.setItem(RECENT_SLUGS_KEY, JSON.stringify(next));
-  renderRecentSlugs();
+  const next = [
+    { slug, title },
+    ...getRecentGames().filter((item) => item.slug !== slug),
+  ].slice(0, 8);
+  localStorage.setItem(RECENT_GAMES_KEY, JSON.stringify(next));
+  renderRecentGames();
 }
 
-function clearRecentSlugs() {
-  localStorage.removeItem(RECENT_SLUGS_KEY);
-  renderRecentSlugs();
+function clearRecentGames() {
+  localStorage.removeItem(RECENT_GAMES_KEY);
+  renderRecentGames();
 }
 
-function renderRecentSlugs() {
-  const recent = getRecentSlugs();
+function renderRecentGames() {
+  const recent = getRecentGames();
   if (recent.length === 0) {
     elements.recentList.classList.add("empty");
     elements.recentList.textContent = "还没有最近访问记录。";
@@ -126,12 +144,45 @@ function renderRecentSlugs() {
 
   elements.recentList.classList.remove("empty");
   elements.recentList.innerHTML = recent
-    .map((slug) => `<button class="recent-chip" type="button" data-slug="${escapeHtml(slug)}">${escapeHtml(slug)}</button>`)
+    .map((item) => (
+      `<button class="recent-chip" type="button" data-slug="${escapeHtml(item.slug)}">${escapeHtml(item.title)}</button>`
+    ))
     .join("");
 }
 
+function resetSearchState() {
+  state.search = { query: "", matches: [], total_matches: 0, selected: null, status: "idle" };
+}
+
+function renderSearchResults() {
+  const matches = Array.isArray(state.search.matches) ? state.search.matches : [];
+  if (!matches.length) {
+    elements.searchPanel.classList.add("hidden");
+    elements.searchMeta.textContent = "";
+    elements.searchResults.innerHTML = "";
+    return;
+  }
+
+  const totalMatches = Number(state.search.total_matches || matches.length || 0);
+  elements.searchPanel.classList.remove("hidden");
+  elements.searchMeta.textContent = totalMatches > matches.length
+    ? `共 ${totalMatches} 个候选，当前展示前 ${matches.length} 个`
+    : `共 ${matches.length} 个候选`;
+  elements.searchResults.innerHTML = matches.map((match) => {
+    const title = match.title || match.slug || "未命名游戏";
+    return `
+      <button class="search-result-card" type="button" data-slug="${escapeHtml(match.slug || "")}">
+        <h3 class="search-result-title">${escapeHtml(title)}</h3>
+      </button>
+    `;
+  }).join("");
+}
+
 function setStatus(message, tone = "neutral") {
-  if (!message) {
+  if (!elements.statusCard || !message || tone !== "error") {
+    if (!elements.statusCard) {
+      return;
+    }
     elements.statusCard.classList.add("hidden");
     elements.statusCard.innerHTML = "";
     return;
@@ -139,6 +190,14 @@ function setStatus(message, tone = "neutral") {
   elements.statusCard.classList.remove("hidden");
   elements.statusCard.dataset.tone = tone;
   elements.statusCard.innerHTML = message;
+}
+
+function showSearchRoute() {
+  if (window.location.pathname === "/") {
+    window.history.replaceState({}, "", "/");
+    return;
+  }
+  window.history.pushState({}, "", "/");
 }
 
 function renderGame() {
@@ -247,6 +306,20 @@ function setLoading(isLoading) {
   elements.submitButton.textContent = isLoading ? "检索中..." : "检索";
 }
 
+function openGameSlug(slug, replace = false) {
+  const normalized = normalizeSlug(slug);
+  if (!normalized) {
+    return;
+  }
+  elements.input.value = "";
+  const nextPath = `/game/${encodeURIComponent(normalized)}`;
+  if (replace) {
+    window.location.replace(nextPath);
+    return;
+  }
+  window.location.assign(nextPath);
+}
+
 async function fetchJson(url) {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
   const payload = await response.json().catch(() => ({ ok: false, error: "响应解析失败" }));
@@ -256,10 +329,80 @@ async function fetchJson(url) {
   return payload.data;
 }
 
+async function searchGames(query) {
+  const normalized = normalizeSlug(query);
+  if (!normalized) {
+    setStatus("请输入一个有效的游戏名。", "error");
+    return;
+  }
+
+  elements.input.value = normalized;
+  state.requestId += 1;
+  const requestId = state.requestId;
+  resetSearchState();
+  state.slug = "";
+  state.game = null;
+  state.reviews = { critic_reviews: [], user_reviews: [], counts: { critic_reviews: 0, user_reviews: 0 } };
+  state.visibleCritic = INITIAL_VISIBLE_REVIEWS;
+  state.visibleUser = INITIAL_VISIBLE_REVIEWS;
+  state.gameLoading = false;
+  state.reviewsLoading = false;
+  state.gameError = "";
+  state.reviewsError = "";
+
+  setLoading(true);
+  renderSearchResults();
+  renderGame();
+  renderReviews();
+  setStatus("<strong>正在搜索本地游戏索引。</strong><br>如果结果存在歧义，我会列出最接近的候选供你选择。");
+
+  try {
+    const searchResult = await fetchJson(`/api/search?q=${encodeURIComponent(normalized)}`);
+    if (requestId !== state.requestId) {
+      return;
+    }
+    state.search = searchResult;
+    renderSearchResults();
+
+    if (searchResult.selected && searchResult.selected.slug) {
+      setStatus(
+        `<strong>已定位到匹配游戏。</strong><br>正在打开 <strong>${escapeHtml(searchResult.selected.title || searchResult.selected.slug)}</strong> 的详情页。`,
+        "success"
+      );
+      openGameSlug(searchResult.selected.slug);
+      return;
+    }
+
+    showSearchRoute();
+
+    if ((searchResult.matches || []).length) {
+      setStatus(
+        "<strong>找到多个可能匹配。</strong><br>请从下方候选中选择，或输入更完整的游戏名继续缩小范围。"
+      );
+      return;
+    }
+
+    setStatus(
+      `<strong>没有找到匹配结果。</strong><br>当前本地索引里没有与 <strong>${escapeHtml(normalized)}</strong> 接近的游戏。`,
+      "error"
+    );
+  } catch (error) {
+    if (requestId !== state.requestId) {
+      return;
+    }
+    showSearchRoute();
+    setStatus(`<strong>搜索失败。</strong><br>${escapeHtml(String(error.message || error))}`, "error");
+  } finally {
+    if (requestId === state.requestId) {
+      setLoading(false);
+    }
+  }
+}
+
 async function loadSlug(slug) {
   const normalized = normalizeSlug(slug);
   if (!normalized) {
-    setStatus("请输入一个有效的 slug。", "error");
+    setStatus("无法识别当前游戏地址。", "error");
     return;
   }
 
@@ -267,6 +410,7 @@ async function loadSlug(slug) {
   const requestId = state.requestId;
   state.slug = normalized;
   state.game = null;
+  resetSearchState();
   state.reviews = { critic_reviews: [], user_reviews: [], counts: { critic_reviews: 0, user_reviews: 0 } };
   state.visibleCritic = INITIAL_VISIBLE_REVIEWS;
   state.visibleUser = INITIAL_VISIBLE_REVIEWS;
@@ -276,6 +420,7 @@ async function loadSlug(slug) {
   state.reviewsError = "";
 
   setLoading(true);
+  renderSearchResults();
   renderGame();
   renderReviews();
   setStatus("<strong>正在获取游戏基础信息。</strong><br>首次检索某个 slug 时，接口可能需要几秒到十几秒来抓取并落库。");
@@ -288,7 +433,7 @@ async function loadSlug(slug) {
     state.game = game;
     state.gameLoading = false;
     renderGame();
-    saveRecentSlug(normalized);
+    saveRecentGame({ slug: normalized, title: game.title || normalized });
     setStatus(
       game.auto_crawled
         ? "<strong>已完成游戏信息抓取。</strong><br>接下来加载媒体评论和用户评论。"
@@ -333,13 +478,15 @@ function applyRoute(slug, replace = false) {
   } else {
     window.history.pushState({}, "", nextPath);
   }
-  elements.input.value = normalized;
+  elements.input.value = "";
   if (normalized) {
     loadSlug(normalized);
   } else {
     state.slug = "";
     state.game = null;
+    resetSearchState();
     state.reviews = { critic_reviews: [], user_reviews: [], counts: { critic_reviews: 0, user_reviews: 0 } };
+    renderSearchResults();
     renderGame();
     renderReviews();
     setStatus("");
@@ -356,7 +503,7 @@ function routeSlugFromPath() {
 
 elements.form.addEventListener("submit", (event) => {
   event.preventDefault();
-  applyRoute(elements.input.value);
+  searchGames(elements.input.value);
 });
 
 elements.recentList.addEventListener("click", (event) => {
@@ -366,12 +513,27 @@ elements.recentList.addEventListener("click", (event) => {
   }
   const slug = target.dataset.slug;
   if (slug) {
-    applyRoute(slug);
+    openGameSlug(slug);
+  }
+});
+
+elements.searchResults.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  const button = target.closest("[data-slug]");
+  if (!(button instanceof HTMLElement)) {
+    return;
+  }
+  const slug = button.dataset.slug;
+  if (slug) {
+    openGameSlug(slug);
   }
 });
 
 elements.clearRecent.addEventListener("click", () => {
-  clearRecentSlugs();
+  clearRecentGames();
 });
 
 elements.tabCritic.addEventListener("click", () => {
@@ -396,22 +558,25 @@ elements.userMore.addEventListener("click", () => {
 
 window.addEventListener("popstate", () => {
   const slug = routeSlugFromPath();
-  elements.input.value = slug;
+  elements.input.value = "";
   if (slug) {
     loadSlug(slug);
   } else {
     state.game = null;
+    resetSearchState();
+    renderSearchResults();
     renderGame();
     renderReviews();
     setStatus("");
   }
 });
 
-renderRecentSlugs();
+renderRecentGames();
+resetSearchState();
+renderSearchResults();
 renderReviews();
 const initialSlug = routeSlugFromPath();
 if (initialSlug) {
-  elements.input.value = initialSlug;
   applyRoute(initialSlug, true);
 } else {
   setStatus("");

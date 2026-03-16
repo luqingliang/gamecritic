@@ -323,6 +323,131 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(critic_reviews, [])
         self.assertEqual(user_reviews, [])
 
+    def test_search_endpoint_returns_selected_best_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="elden-ring",
+                    product_payload={"data": {"item": {"id": 1, "title": "Elden Ring", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+                storage.upsert_game_slugs(
+                    [
+                        (
+                            "metaphor-refantazio",
+                            "https://www.metacritic.com/game/metaphor-refantazio/",
+                            "https://www.metacritic.com/games.xml",
+                        )
+                    ]
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/search?q=Elden%20Ring")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["status"], "matched")
+        self.assertEqual(payload["data"]["selected"]["slug"], "elden-ring")
+        self.assertEqual(payload["data"]["matches"][0]["slug"], "elden-ring")
+
+    def test_search_endpoint_returns_ambiguous_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="resident-evil-4",
+                    product_payload={"data": {"item": {"id": 1, "title": "Resident Evil 4", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+                storage.upsert_game(
+                    slug="resident-evil-village",
+                    product_payload={"data": {"item": {"id": 2, "title": "Resident Evil Village", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/search?q=Resident%20Evil")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["status"], "ambiguous")
+        self.assertIsNone(payload["data"]["selected"])
+        self.assertGreaterEqual(payload["data"]["total_matches"], 2)
+        self.assertGreaterEqual(len(payload["data"]["matches"]), 2)
+
+    def test_search_endpoint_requires_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/search")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 400)
+        self.assertFalse(payload["ok"])
+        self.assertIn("q", payload["error"])
+
+    def test_search_endpoint_filters_out_matches_below_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="resident-evil-village",
+                    product_payload={
+                        "data": {"item": {"id": 1, "title": "Resident Evil Village", "platform": "PC"}}
+                    },
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/search?q=RE%20Village%20DLC")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["status"], "no_match")
+        self.assertEqual(payload["data"]["matches"], [])
+        self.assertIsNone(payload["data"]["selected"])
+
     def test_reviews_endpoint_backfills_reviews_and_returns_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -509,8 +634,9 @@ class WebServiceApiTestCase(unittest.TestCase):
         text = body.decode("utf-8")
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "text/html; charset=utf-8")
-        self.assertIn("<title>Gamecritic Archive</title>", text)
+        self.assertIn("<title>Gamecritic</title>", text)
         self.assertIn('id="slug-form"', text)
+        self.assertIn('id="status-card"', text)
         self.assertIn('/static/app.js', text)
 
     def test_frontend_game_route_returns_html(self) -> None:
@@ -545,7 +671,7 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "application/javascript; charset=utf-8")
         self.assertIn("loadSlug", text)
-        self.assertIn("RECENT_SLUGS_KEY", text)
+        self.assertIn("RECENT_GAMES_KEY", text)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from typing import Any, Callable, ContextManager
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .scraper import MetacriticScraper
+from .slug_search import SlugSearchMatch, search_slug_candidates
 from .storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
@@ -69,19 +70,30 @@ def _normalize_slug(value: str) -> str:
     return normalized
 
 
-def _request_route_and_slug(path: str) -> tuple[str, str | None]:
+def _normalize_search_query(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise WebServiceError(HTTPStatus.BAD_REQUEST, "q query parameter is required")
+    return normalized
+
+
+def _request_route_and_value(path: str) -> tuple[str, str | None]:
     parsed = urlsplit(path)
     query = parse_qs(parsed.query, keep_blank_values=True)
     normalized_path = parsed.path.rstrip("/") or "/"
 
     if normalized_path == "/":
         return "index", None
+    if normalized_path == "/api/search":
+        return "search", _normalize_search_query(query.get("q", [""])[0])
     if normalized_path == "/api/game":
         return "game", _normalize_slug(query.get("slug", [""])[0])
     if normalized_path == "/api/reviews":
         return "reviews", _normalize_slug(query.get("slug", [""])[0])
 
     parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) == 3 and parts[:2] == ["api", "search"]:
+        return "search", _normalize_search_query(unquote(parts[2]))
     if len(parts) == 3 and parts[:2] == ["api", "games"]:
         return "game", _normalize_slug(unquote(parts[2]))
     if len(parts) == 4 and parts[:2] == ["api", "games"] and parts[3] == "reviews":
@@ -145,25 +157,29 @@ class GamecriticWebService:
         self._server.serve_forever(poll_interval=0.05)
 
     def dispatch_path(self, path: str) -> tuple[int, dict[str, Any]]:
-        route, slug = _request_route_and_slug(path)
+        route, value = _request_route_and_value(path)
         if route == "index":
             return HTTPStatus.OK, {
                 "ok": True,
                 "data": {
                     "service": "gamecritic",
                     "endpoints": {
+                        "search": "/api/search?q=<game_name>",
                         "game": "/api/game?slug=<slug>",
                         "reviews": "/api/reviews?slug=<slug>",
                     },
                 },
             }
-        if slug is None:
-            raise WebServiceError(HTTPStatus.BAD_REQUEST, "slug query parameter is required")
+        if value is None:
+            raise WebServiceError(HTTPStatus.BAD_REQUEST, "request parameter is required")
+
+        if route == "search":
+            return HTTPStatus.OK, {"ok": True, "data": self._search_games(value)}
 
         if route == "game":
-            return HTTPStatus.OK, {"ok": True, "data": self._get_or_crawl_game(slug)}
+            return HTTPStatus.OK, {"ok": True, "data": self._get_or_crawl_game(value)}
         if route == "reviews":
-            return HTTPStatus.OK, {"ok": True, "data": self._get_or_crawl_reviews(slug)}
+            return HTTPStatus.OK, {"ok": True, "data": self._get_or_crawl_reviews(value)}
         raise WebServiceError(HTTPStatus.NOT_FOUND, f"unknown endpoint: {path}")
 
     def handle_get(self, handler: BaseHTTPRequestHandler) -> None:
@@ -229,6 +245,16 @@ class GamecriticWebService:
         game["auto_crawled"] = True
         return game
 
+    def _search_games(self, query: str) -> dict[str, Any]:
+        search_result = search_slug_candidates(self._storage.list_slug_search_candidates(), query)
+        return {
+            "query": search_result.query,
+            "status": search_result.status,
+            "total_matches": search_result.total_matches,
+            "selected": self._serialize_search_match(search_result.selected),
+            "matches": [self._serialize_search_match(match) for match in search_result.matches],
+        }
+
     def _get_or_crawl_reviews(self, slug: str) -> dict[str, Any]:
         with self._client_factory() as client:
             scraper = MetacriticScraper(client, self._storage, stop_event=self._stop_event)
@@ -264,6 +290,17 @@ class GamecriticWebService:
                 "critic_reviews": len(critic_reviews),
                 "user_reviews": len(user_reviews),
             },
+        }
+
+    @staticmethod
+    def _serialize_search_match(match: SlugSearchMatch | None) -> dict[str, Any] | None:
+        if match is None:
+            return None
+        return {
+            "slug": match.slug,
+            "title": match.title,
+            "score": round(match.score, 3),
+            "matched_by": match.matched_by,
         }
 
 

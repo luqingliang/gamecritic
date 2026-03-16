@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gamecritic Archive</title>
+  <title>Gamecritic</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -12,16 +12,12 @@
     <div class="ambient ambient-right"></div>
 
     <header class="hero">
-      <p class="eyebrow">GAME DATA ARCHIVE</p>
       <div class="hero-copy">
-        <h1>检索一款游戏的完整档案</h1>
-        <p class="hero-text">
-          先从 Metacritic slug 开始。第一版会直接读取或触发抓取，再把游戏详情和评论数据整理成一个适合浏览的页面。
-        </p>
+        <h1>Gamecritic</h1>
       </div>
 
       <form id="slug-form" class="lookup-form" novalidate>
-        <label class="lookup-label" for="slug-input">Metacritic slug</label>
+        <p class="lookup-hint lookup-intro">输入游戏名后开始检索，高置信结果会直接打开详情页。</p>
         <div class="lookup-row">
           <input
             id="slug-input"
@@ -29,19 +25,27 @@
             type="text"
             autocomplete="off"
             spellcheck="false"
-            placeholder="例如：elden-ring"
+            placeholder="例如：Elden Ring"
           >
           <button id="submit-button" type="submit">检索</button>
         </div>
-        <p class="lookup-hint">当前版本仅支持输入 slug，不支持游戏名搜索。</p>
+        <section class="lookup-recent" aria-labelledby="recent-title">
+          <div class="section-head">
+            <h2 id="recent-title">最近访问</h2>
+            <button id="clear-recent" class="ghost-button" type="button">清空</button>
+          </div>
+          <div id="recent-list" class="recent-list empty">还没有最近访问记录。</div>
+        </section>
       </form>
 
-      <section class="recent-panel" aria-labelledby="recent-title">
+      <section id="search-panel" class="search-panel hidden" aria-labelledby="search-title">
         <div class="section-head">
-          <h2 id="recent-title">最近访问</h2>
-          <button id="clear-recent" class="ghost-button" type="button">清空</button>
+          <div>
+            <h2 id="search-title">搜索结果</h2>
+          </div>
+          <div id="search-meta" class="search-meta"></div>
         </div>
-        <div id="recent-list" class="recent-list empty">还没有最近访问记录。</div>
+        <div id="search-results" class="search-results"></div>
       </section>
     </header>
 
@@ -49,8 +53,8 @@
       <section id="status-card" class="status-card hidden" aria-live="polite"></section>
 
       <section id="empty-state" class="empty-state">
-        <h2>从一条 slug 开始</h2>
-        <p>输入你要查看的游戏 slug，系统会先获取基础信息，再加载该游戏的媒体评论和用户评论。</p>
+        <h2>从一个游戏名开始</h2>
+        <p>输入游戏名，系统会先从本地索引匹配最接近的游戏，再获取基础信息和评论数据。</p>
       </section>
 
       <section id="results" class="results hidden">

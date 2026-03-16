@@ -147,11 +147,13 @@ The service root now serves a user-facing frontend:
 
 Available endpoints:
 
+- `GET /api/search?q=<game_name>`: Searches the local slug index by game name or slug and returns the best match plus top candidate list.
 - `GET /api/game?slug=<slug>`: Returns one game's stored data. If the row is missing from `games`, the service crawls it, stores it, and then returns the fresh record.
 - `GET /api/reviews?slug=<slug>`: Backfills critic + user reviews for the requested slug and returns the stored review payloads.
 
-Both endpoints also accept path-style variants:
+Path-style variants:
 
+- `GET /api/search/<game_name>`
 - `GET /api/games/<slug>`
 - `GET /api/games/<slug>/reviews`
 

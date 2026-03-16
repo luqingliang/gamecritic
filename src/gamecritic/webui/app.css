@@ -89,8 +89,7 @@ input {
 }
 
 .eyebrow,
-.section-kicker,
-.lookup-label {
+.section-kicker {
   margin: 0;
   font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
   letter-spacing: 0.18em;
@@ -120,6 +119,7 @@ input {
 }
 
 .lookup-form,
+.search-panel,
 .recent-panel,
 .status-card,
 .game-card,
@@ -200,7 +200,27 @@ input {
   font-size: 0.94rem;
 }
 
+.lookup-intro {
+  margin: 0 0 12px;
+}
+
+.lookup-recent {
+  margin-top: 14px;
+}
+
+.lookup-recent .section-head {
+  align-items: center;
+}
+
+.lookup-recent .section-head h2 {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
 .recent-panel,
+.search-panel,
 .status-card,
 .empty-state,
 .game-card,
@@ -231,9 +251,16 @@ input {
 
 .recent-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 18px;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.search-meta {
+  color: var(--muted);
+  text-align: right;
+  max-width: 30ch;
 }
 
 .recent-list.empty {
@@ -241,12 +268,67 @@ input {
 }
 
 .recent-chip {
-  padding: 10px 14px;
+  flex: 0 0 auto;
+  max-width: 180px;
+  padding: 7px 11px;
   border-radius: 999px;
   border: 1px solid rgba(25, 22, 18, 0.08);
   background: rgba(255, 255, 255, 0.68);
   color: var(--ink);
   cursor: pointer;
+  font-size: 0.88rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lookup-recent .ghost-button {
+  flex: 0 0 auto;
+  padding: 7px 11px;
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+.search-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.search-result-card {
+  width: 100%;
+  padding: 18px;
+  border: 1px solid rgba(25, 22, 18, 0.08);
+  border-radius: 20px;
+  background: var(--panel-strong);
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  text-align: left;
+}
+
+.search-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.search-result-title {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.search-result-slug {
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  color: var(--accent-deep);
+  letter-spacing: 0.03em;
+}
+
+.search-result-meta {
+  color: var(--muted);
+  font-size: 0.94rem;
 }
 
 .content {
@@ -256,18 +338,10 @@ input {
 }
 
 .status-card {
-  color: var(--muted);
+  color: var(--accent-deep);
   line-height: 1.65;
-}
-
-.status-card[data-tone="success"] {
-  border-color: rgba(117, 143, 52, 0.28);
-  background: rgba(241, 247, 228, 0.86);
-}
-
-.status-card[data-tone="error"] {
-  border-color: rgba(217, 79, 4, 0.28);
-  background: rgba(255, 240, 232, 0.86);
+  border-color: rgba(217, 79, 4, 0.22);
+  background: rgba(255, 240, 232, 0.92);
 }
 
 .status-card strong {
@@ -559,6 +633,7 @@ input {
   }
 
   .hero,
+  .search-panel,
   .recent-panel,
   .lookup-form,
   .status-card,
@@ -570,6 +645,7 @@ input {
   }
 
   .hero,
+  .search-panel,
   .recent-panel,
   .lookup-form,
   .status-card,
@@ -580,10 +656,15 @@ input {
   }
 
   .lookup-row,
+  .search-result-head,
   .title-row,
   .section-head,
   .review-head {
     flex-direction: column;
+  }
+
+  .lookup-recent .section-head {
+    flex-direction: row;
   }
 
   .game-card,
@@ -598,6 +679,10 @@ input {
   }
 
   .review-summary {
+    text-align: left;
+  }
+
+  .search-meta {
     text-align: left;
   }
 }

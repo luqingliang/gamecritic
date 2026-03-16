@@ -1475,7 +1475,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(any(line.startswith("portal  # ") for line in printed_lines[1:]))
         self.assertTrue(any(line.startswith("portal-remastered  # ") for line in printed_lines[1:]))
 
-    def test_run_search_slug_prints_low_confidence_single_candidate(self) -> None:
+    def test_run_search_slug_filters_out_single_candidate_below_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -1500,10 +1500,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 exit_code = run_search_slug(args)
 
         self.assertEqual(exit_code, 2)
-        printed_lines = [call.args[0] for call in print_mock.call_args_list]
-        self.assertEqual(printed_lines[0], "No confident slug match found for query: RE Village DLC")
-        self.assertEqual(len(printed_lines), 2)
-        self.assertTrue(printed_lines[1].startswith("resident-evil-village  # "))
+        print_mock.assert_called_once_with(
+            "No slug matched query: RE Village DLC\nTip: run 'sync-slugs' first to build the local slug index."
+        )
 
     def test_run_search_slug_recommends_sync_when_no_match_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

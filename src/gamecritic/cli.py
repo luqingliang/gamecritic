@@ -13,9 +13,7 @@ import sys
 import threading
 from contextlib import contextmanager, redirect_stdout
 from contextvars import ContextVar, copy_context
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from difflib import SequenceMatcher
 from typing import Callable, Sequence
 
 from .client import MetacriticClient
@@ -28,6 +26,7 @@ from .config import (
 from .cover_downloader import CoverImageDownloader
 from .exporter import export_sqlite_to_excel
 from .scraper import MetacriticScraper
+from .slug_search import format_slug_search_match, search_slug_candidates
 from .storage import APP_TABLE_NAMES, SQLiteStorage, load_slug_search_candidates_from_db
 from .web_service import GamecriticWebService, WebServiceConfig
 
@@ -165,20 +164,6 @@ _INT_SETTING_KEYS = {"review_page_size", "concurrency", "max_retries", "server_p
 _FLOAT_SETTING_KEYS = {"timeout", "backoff", "delay"}
 _OPTIONAL_INT_SETTING_KEYS = {"max_review_pages"}
 _STRING_SETTING_KEYS = {"db", "export_output", "covers_dir", "server_host"}
-_SEARCH_SLUG_AUTO_ACCEPT_SCORE = 0.92
-_SEARCH_SLUG_AMBIGUITY_MARGIN = 0.03
-_SEARCH_SLUG_MIN_SCORE = 0.55
-_SEARCH_SLUG_MAX_CANDIDATES = 5
-
-
-@dataclass(frozen=True)
-class _SlugSearchMatch:
-    slug: str
-    title: str | None
-    score: float
-    matched_by: str
-
-
 def _current_log_command_name() -> str:
     current = str(_LOG_COMMAND_CONTEXT.get() or "").strip().lower()
     return current or "command"
@@ -405,198 +390,6 @@ def _maybe_run_auto_sync_slugs_before_crawl(args: argparse.Namespace, storage: S
     return None
 
 
-def _normalize_search_text(value: object) -> str:
-    text = str(value or "").casefold()
-    text = re.sub(r"[_\W]+", " ", text, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _slug_text(slug: str) -> str:
-    return slug.replace("-", " ").replace("_", " ").strip()
-
-
-def _search_token_list(text: str) -> list[str]:
-    normalized = _normalize_search_text(text)
-    return [token for token in normalized.split(" ") if token]
-
-
-def _search_tokens(text: str) -> set[str]:
-    return set(_search_token_list(text))
-
-
-def _match_query_token_to_candidate_group(
-    query_token: str,
-    candidate_tokens: Sequence[str],
-    start_index: int,
-) -> int | None:
-    if len(query_token) <= 1:
-        return None
-
-    acronym = ""
-    for index in range(start_index, len(candidate_tokens)):
-        token = candidate_tokens[index]
-        if not token:
-            continue
-        acronym += token[0]
-        if len(acronym) > len(query_token) or not query_token.startswith(acronym):
-            return None
-        if acronym == query_token and (index + 1 - start_index) >= 2:
-            return index + 1
-    return None
-
-
-def _abbreviation_match_score(query_text: str, candidate_text: str) -> float:
-    query_tokens = _search_token_list(query_text)
-    candidate_tokens = _search_token_list(candidate_text)
-    if not query_tokens or len(candidate_tokens) < 2:
-        return 0.0
-
-    candidate_index = 0
-    used_abbreviation = False
-    for query_token in query_tokens:
-        if candidate_index >= len(candidate_tokens):
-            return 0.0
-        if query_token == candidate_tokens[candidate_index]:
-            candidate_index += 1
-            continue
-
-        matched_end = _match_query_token_to_candidate_group(query_token, candidate_tokens, candidate_index)
-        if matched_end is None:
-            return 0.0
-        candidate_index = matched_end
-        used_abbreviation = True
-
-    if not used_abbreviation:
-        return 0.0
-    if candidate_index == len(candidate_tokens):
-        return 0.995
-
-    coverage = candidate_index / len(candidate_tokens)
-    return min(0.98, 0.92 + (coverage * 0.06))
-
-
-def _text_match_score(query_text: str, candidate_text: str) -> float:
-    normalized_query = _normalize_search_text(query_text)
-    normalized_candidate = _normalize_search_text(candidate_text)
-    if not normalized_query or not normalized_candidate:
-        return 0.0
-    if normalized_query == normalized_candidate:
-        return 1.0
-
-    query_tokens = _search_tokens(normalized_query)
-    candidate_tokens = _search_tokens(normalized_candidate)
-    shared_tokens = query_tokens & candidate_tokens
-    union_tokens = query_tokens | candidate_tokens
-    jaccard = len(shared_tokens) / len(union_tokens) if union_tokens else 0.0
-    coverage = len(shared_tokens) / len(query_tokens) if query_tokens else 0.0
-    sequence_ratio = SequenceMatcher(None, normalized_query, normalized_candidate).ratio()
-
-    score = max(sequence_ratio, jaccard * 0.9, coverage * 0.88)
-    if normalized_candidate.startswith(normalized_query) or normalized_query.startswith(normalized_candidate):
-        score = max(score, 0.9 + (coverage * 0.08))
-    elif normalized_query in normalized_candidate or normalized_candidate in normalized_query:
-        score = max(score, 0.84 + (coverage * 0.08))
-    return min(score, 0.999)
-
-
-def _score_slug_search_candidate(
-    *,
-    query: str,
-    slug: str,
-    title: str | None,
-) -> _SlugSearchMatch | None:
-    normalized_slug = str(slug).strip()
-    if not normalized_slug:
-        return None
-
-    normalized_query = _normalize_search_text(query)
-    slug_query = normalized_query.replace(" ", "-")
-    slug_text = _slug_text(normalized_slug)
-
-    if normalized_query and slug_query == normalized_slug.casefold():
-        return _SlugSearchMatch(slug=normalized_slug, title=title, score=1.0, matched_by="slug")
-
-    title_score = _text_match_score(query, title or "")
-    slug_score = _text_match_score(query, slug_text)
-    title_abbreviation_score = _abbreviation_match_score(query, title or "")
-    slug_abbreviation_score = _abbreviation_match_score(query, slug_text)
-
-    match_priority = {
-        "title": 3,
-        "title_abbr": 2,
-        "slug": 1,
-        "slug_abbr": 0,
-    }
-    matched_by, best_score = max(
-        (
-            ("title", title_score),
-            ("title_abbr", title_abbreviation_score),
-            ("slug", slug_score),
-            ("slug_abbr", slug_abbreviation_score),
-        ),
-        key=lambda item: (item[1], match_priority[item[0]]),
-    )
-
-    if matched_by == "title" and title:
-        best_score = min(0.999, best_score + 0.01)
-
-    if best_score < _SEARCH_SLUG_MIN_SCORE:
-        return None
-
-    return _SlugSearchMatch(
-        slug=normalized_slug,
-        title=title,
-        score=best_score,
-        matched_by=matched_by,
-    )
-
-
-def _find_slug_search_matches(
-    candidates: Sequence[tuple[str, str | None]],
-    query: str,
-    *,
-    limit: int = _SEARCH_SLUG_MAX_CANDIDATES,
-) -> tuple[list[_SlugSearchMatch], int]:
-    matches: list[_SlugSearchMatch] = []
-    for slug, title in candidates:
-        match = _score_slug_search_candidate(query=query, slug=slug, title=title)
-        if match is not None:
-            matches.append(match)
-
-    matches.sort(
-        key=lambda item: (
-            -item.score,
-            item.title is None,
-            len(item.slug),
-            item.slug,
-        )
-    )
-    total_matches = len(matches)
-    return matches[:max(1, limit)], total_matches
-
-
-def _select_slug_search_match(matches: Sequence[_SlugSearchMatch]) -> _SlugSearchMatch | None:
-    if not matches:
-        return None
-
-    best = matches[0]
-    second = matches[1] if len(matches) > 1 else None
-    if best.score < _SEARCH_SLUG_AUTO_ACCEPT_SCORE:
-        return None
-    if second is None:
-        return best
-    if (best.score - second.score) >= _SEARCH_SLUG_AMBIGUITY_MARGIN:
-        return best
-    return None
-
-
-def _format_search_slug_match(match: _SlugSearchMatch) -> str:
-    details = [f"score={match.score:.3f}", f"matched_by={match.matched_by}"]
-    if match.title:
-        details.insert(0, f"title={match.title}")
-    return f"{match.slug}  # " + " ".join(details)
-
-
 def run_search_slug(args: argparse.Namespace) -> int:
     query = str(getattr(args, "query", "") or "").strip()
     if not query:
@@ -606,16 +399,16 @@ def run_search_slug(args: argparse.Namespace) -> int:
     candidates = load_slug_search_candidates_from_db(args.db)
 
     logging.info("search-slug matching candidates")
-    matches, total_matches = _find_slug_search_matches(candidates, query)
+    search_result = search_slug_candidates(candidates, query)
 
     logging.info("search-slug selecting result")
-    selected = _select_slug_search_match(matches)
+    selected = search_result.selected
     if selected is not None:
         logging.info("search-slug matched slug=%s", selected.slug)
         print(selected.slug)
         return 0
 
-    if not matches:
+    if not search_result.matches:
         logging.info("search-slug no match found")
         print(
             f"No slug matched query: {query}\n"
@@ -623,16 +416,16 @@ def run_search_slug(args: argparse.Namespace) -> int:
         )
         return 2
 
-    if total_matches == 1:
+    if search_result.total_matches == 1:
         logging.info("search-slug no confident match found")
         print(f"No confident slug match found for query: {query}")
-        print(_format_search_slug_match(matches[0]))
+        print(format_slug_search_match(search_result.matches[0]))
         return 2
 
-    logging.info("search-slug multiple matches found count=%d", total_matches)
+    logging.info("search-slug multiple matches found count=%d", search_result.total_matches)
     print(f"Multiple possible slugs matched query: {query}")
-    for match in matches:
-        print(_format_search_slug_match(match))
+    for match in search_result.matches:
+        print(format_slug_search_match(match))
     return 2
 
 

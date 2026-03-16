@@ -145,11 +145,13 @@ gamecritic serve
 
 可用接口：
 
+- `GET /api/search?q=<game_name>`：按游戏名或 slug 搜索本地索引，返回最佳匹配和候选列表。
 - `GET /api/game?slug=<slug>`：返回单个游戏的落库数据；如果 `games` 表里没有该 slug，会先自动抓取并落库，再返回结果。
 - `GET /api/reviews?slug=<slug>`：为指定 slug 补抓媒体评论和用户评论，并返回当前数据库中的评论数据。
 
 同时也支持 path 风格：
 
+- `GET /api/search/<game_name>`
 - `GET /api/games/<slug>`
 - `GET /api/games/<slug>/reviews`
 
