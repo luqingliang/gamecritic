@@ -10,6 +10,23 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.2.0] - 2026-03-16
+
+### Added
+- New `search-slug` command for resolving the best local slug match by game name.
+- Abbreviation-aware slug search now supports queries such as `GTA` / `GTA V`, including slug-only candidates.
+- `crawl-reviews [slug]` can now crawl and persist a requested game before backfilling reviews when it is missing from `games`.
+- `download-covers [slug]` can now crawl and persist a requested game before downloading its cover when it is missing from local data.
+- Interactive cover downloads now emit per-cover progress logs and summary counters that include `games_crawled`.
+
+### Changed
+- Interactive help output and common command documentation now clarify optional `[slug]` usage for review backfill and cover download commands.
+- Interactive command ordering and help presentation were refined for faster common workflow access.
+
+### Fixed
+- Interactive slug/game status under the input prompt now refreshes after `crawl-one`, `crawl-reviews`, and `download-covers`.
+- `crawl-reviews` and `download-covers` summaries now surface when a fallback crawl stored new game rows.
+
 ## [0.1.9] - 2026-03-12
 
 ### Changed
@@ -132,7 +149,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/luqingliang/gamecritic/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/luqingliang/gamecritic/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/luqingliang/gamecritic/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/luqingliang/gamecritic/compare/v0.1.6...v0.1.7
