@@ -1,0 +1,22 @@
+Original prompt: 给当前的web页面加上中英文切换功能
+
+- Added a client-side zh/en language switch for the served web UI.
+- Moved page copy into a locale dictionary in `src/gamecritic/webui/app.js` and re-render static + dynamic text on locale changes.
+- Added a persistent language preference via `localStorage` key `gamecritic_lang`.
+- Restored compatibility checks in `tests/test_web_service.py` for the language switch markup and JS constant.
+- `develop-web-game` skill was only partially applicable here because this project is not a canvas/game app and has no Playwright game hooks; using the small-change + regression-test loop instead.
+- Verification:
+  - `node --check src/gamecritic/webui/app.js`
+  - `.venv/bin/python -m unittest tests.test_web_service`
+  - `.venv/bin/python -m unittest discover -s tests`
+- Removed the decorative review kicker (`评论流` / `REVIEW STREAM`) from the reviews panel header and updated the frontend static test to assert the remaining title node instead.
+- Deferred interactive CLI startup status counts: the prompt now starts with a loading placeholder and refreshes `games` / `game_slugs` totals in a background daemon thread after the UI is shown.
+- Verification:
+  - `.venv/bin/python -m unittest tests.test_interactive_cli`
+  - `.venv/bin/python -m unittest discover -s tests`
+  - quick startup probe for first stdout from `gamecritic interactive`
+- Lazy-loaded the Excel exporter from `run_export_excel()` so interactive CLI startup no longer imports `gamecritic.exporter` / `openpyxl`.
+- Verification:
+  - `.venv/bin/python -m unittest tests.test_interactive_cli`
+  - `.venv/bin/python -m unittest discover -s tests`
+  - `python -X importtime -m gamecritic.cli interactive --help` (confirmed no `openpyxl` / `gamecritic.exporter` in startup imports)

@@ -1,8 +1,135 @@
 const RECENT_GAMES_KEY = "gamecritic_recent_games";
+const LANGUAGE_KEY = "gamecritic_lang";
 const INITIAL_VISIBLE_REVIEWS = 20;
 const REVIEW_INCREMENT = 20;
 
+const COPY = {
+  zh: {
+    htmlLang: "zh-CN",
+    pageTitle: "Gamecritic",
+    languageGroupLabel: "语言切换",
+    introHint: "输入游戏名后开始检索，高置信结果会直接打开详情页。",
+    inputPlaceholder: "例如：Elden Ring",
+    submitIdle: "检索",
+    submitLoading: "检索中...",
+    recentTitle: "最近访问",
+    clearRecent: "清空",
+    recentEmpty: "还没有最近访问记录。",
+    searchTitle: "搜索结果",
+    searchMeta: ({ shown, total }) => (
+      total > shown
+        ? `共 ${total} 个候选，当前展示前 ${shown} 个`
+        : `共 ${shown} 个候选`
+    ),
+    emptyTitle: "从一个游戏名开始",
+    emptyCopy: "输入游戏名，系统会先从本地索引匹配最接近的游戏，再获取基础信息和评论数据。",
+    noCover: "暂无封面",
+    profileKicker: "游戏档案",
+    dataSourceCached: "命中本地缓存",
+    dataSourceAutoCrawled: "本次请求触发抓取",
+    labelPlatform: "平台",
+    labelRelease: "发售时间",
+    labelRating: "评级",
+    labelScrapedAt: "抓取时间",
+    criticScoreLabel: "媒体评分",
+    userScoreLabel: "用户评分",
+    reviewsTitle: "评论视图",
+    reviewSummaryLoading: "正在加载评论数据...",
+    reviewSummaryCounts: ({ criticCount, userCount }) => `媒体 ${criticCount} 条 · 用户 ${userCount} 条`,
+    reviewTabsLabel: "评论类型",
+    tabCritic: "媒体评论",
+    tabUser: "用户评论",
+    criticMore: "加载更多媒体评论",
+    userMore: "加载更多用户评论",
+    technicalSummary: "技术信息",
+    techSlug: "slug",
+    techSource: "数据来源",
+    techCriticTotal: "媒体评论数量",
+    techUserTotal: "用户评论数量",
+    techSourceCached: "直接读取现有数据库",
+    techSourceAutoCrawled: "接口触发抓取后落库",
+    reviewCount: ({ count }) => `${count} 条评论`,
+    unknownCritic: "未知媒体",
+    unknownPlayer: "未知玩家",
+    missingQuote: "该评论没有摘要文本。",
+    noCriticReviews: "当前没有媒体评论数据。",
+    noUserReviews: "当前没有用户评论数据。",
+    unnamedGame: "未命名游戏",
+    errorInvalidSearch: "请输入一个有效的游戏名。",
+    errorInvalidRoute: "无法识别当前游戏地址。",
+    errorResponseParse: "响应解析失败",
+    errorRequestFailed: ({ status }) => `请求失败: ${status}`,
+    errorNoMatch: ({ query }) => (
+      `<strong>没有找到匹配结果。</strong><br>当前本地索引里没有与 <strong>${escapeHtml(query)}</strong> 接近的游戏。`
+    ),
+    errorSearchFailed: ({ error }) => `<strong>搜索失败。</strong><br>${escapeHtml(error)}`,
+    errorLookupFailed: ({ error }) => `<strong>检索失败。</strong><br>${escapeHtml(error)}`,
+  },
+  en: {
+    htmlLang: "en",
+    pageTitle: "Gamecritic",
+    languageGroupLabel: "Language switch",
+    introHint: "Enter a game title to search. High-confidence matches open the detail page directly.",
+    inputPlaceholder: "For example: Elden Ring",
+    submitIdle: "Search",
+    submitLoading: "Searching...",
+    recentTitle: "Recent",
+    clearRecent: "Clear",
+    recentEmpty: "No recent games yet.",
+    searchTitle: "Results",
+    searchMeta: ({ shown, total }) => (
+      total > shown
+        ? `${shown} of ${total} matches shown`
+        : `${shown} match${shown === 1 ? "" : "es"}`
+    ),
+    emptyTitle: "Start with a game title",
+    emptyCopy: "Enter a game title to match against the local index, then load the game profile and reviews.",
+    noCover: "NO COVER",
+    profileKicker: "GAME PROFILE",
+    dataSourceCached: "Local cache",
+    dataSourceAutoCrawled: "Fetched on demand",
+    labelPlatform: "Platform",
+    labelRelease: "Release date",
+    labelRating: "Rating",
+    labelScrapedAt: "Scraped at",
+    criticScoreLabel: "Critic score",
+    userScoreLabel: "User score",
+    reviewsTitle: "Reviews",
+    reviewSummaryLoading: "Loading reviews...",
+    reviewSummaryCounts: ({ criticCount, userCount }) => `Critic ${criticCount} · User ${userCount}`,
+    reviewTabsLabel: "Review type",
+    tabCritic: "Critic reviews",
+    tabUser: "User reviews",
+    criticMore: "Load more critic reviews",
+    userMore: "Load more user reviews",
+    technicalSummary: "Technical info",
+    techSlug: "Slug",
+    techSource: "Data source",
+    techCriticTotal: "Critic review count",
+    techUserTotal: "User review count",
+    techSourceCached: "Read directly from the local database",
+    techSourceAutoCrawled: "Fetched and stored by the API request",
+    reviewCount: ({ count }) => `${count} review${count === 1 ? "" : "s"}`,
+    unknownCritic: "Unknown critic",
+    unknownPlayer: "Unknown player",
+    missingQuote: "This review has no quote excerpt.",
+    noCriticReviews: "No critic reviews are available for this game yet.",
+    noUserReviews: "No user reviews are available for this game yet.",
+    unnamedGame: "Untitled game",
+    errorInvalidSearch: "Enter a valid game title.",
+    errorInvalidRoute: "The current game route could not be resolved.",
+    errorResponseParse: "Failed to parse the response.",
+    errorRequestFailed: ({ status }) => `Request failed: ${status}`,
+    errorNoMatch: ({ query }) => (
+      `<strong>No matches found.</strong><br>The local index has nothing close to <strong>${escapeHtml(query)}</strong>.`
+    ),
+    errorSearchFailed: ({ error }) => `<strong>Search failed.</strong><br>${escapeHtml(error)}`,
+    errorLookupFailed: ({ error }) => `<strong>Lookup failed.</strong><br>${escapeHtml(error)}`,
+  },
+};
+
 const state = {
+  locale: loadSavedLocale(),
   slug: "",
   game: null,
   search: { query: "", matches: [], total_matches: 0, selected: null, status: "idle" },
@@ -12,47 +139,104 @@ const state = {
   visibleUser: INITIAL_VISIBLE_REVIEWS,
   gameLoading: false,
   reviewsLoading: false,
+  isBusy: false,
   gameError: "",
   reviewsError: "",
+  status: null,
   requestId: 0,
 };
 
 const elements = {
+  pageTitle: document.getElementById("page-title"),
+  langSwitch: document.getElementById("lang-switch"),
+  langZh: document.getElementById("lang-zh"),
+  langEn: document.getElementById("lang-en"),
   form: document.getElementById("slug-form"),
+  intro: document.getElementById("lookup-intro"),
   input: document.getElementById("slug-input"),
   submitButton: document.getElementById("submit-button"),
+  recentTitle: document.getElementById("recent-title"),
   searchPanel: document.getElementById("search-panel"),
+  searchTitle: document.getElementById("search-title"),
   searchMeta: document.getElementById("search-meta"),
   searchResults: document.getElementById("search-results"),
   recentList: document.getElementById("recent-list"),
   clearRecent: document.getElementById("clear-recent"),
   emptyState: document.getElementById("empty-state"),
+  emptyTitle: document.getElementById("empty-title"),
+  emptyCopy: document.getElementById("empty-copy"),
   results: document.getElementById("results"),
   statusCard: document.getElementById("status-card"),
   coverImage: document.getElementById("cover-image"),
   coverPlaceholder: document.getElementById("cover-placeholder"),
+  profileKicker: document.getElementById("profile-kicker"),
   gameTitle: document.getElementById("game-title"),
   gamePlatform: document.getElementById("game-platform"),
   gameRelease: document.getElementById("game-release"),
   gameRating: document.getElementById("game-rating"),
   gameScrapedAt: document.getElementById("game-scraped-at"),
   dataSourceBadge: document.getElementById("data-source-badge"),
+  labelPlatform: document.getElementById("label-platform"),
+  labelRelease: document.getElementById("label-release"),
+  labelRating: document.getElementById("label-rating"),
+  labelScrapedAt: document.getElementById("label-scraped-at"),
+  criticScoreLabel: document.getElementById("critic-score-label"),
   criticScore: document.getElementById("critic-score"),
   criticCount: document.getElementById("critic-count"),
+  userScoreLabel: document.getElementById("user-score-label"),
   userScore: document.getElementById("user-score"),
   userCount: document.getElementById("user-count"),
+  reviewsTitle: document.getElementById("reviews-title"),
   reviewSummary: document.getElementById("review-summary"),
+  reviewTabBar: document.getElementById("review-tab-bar"),
   tabCritic: document.getElementById("tab-critic"),
   tabUser: document.getElementById("tab-user"),
   criticPanel: document.getElementById("critic-panel"),
   userPanel: document.getElementById("user-panel"),
   criticMore: document.getElementById("critic-more"),
   userMore: document.getElementById("user-more"),
+  technicalSummary: document.getElementById("technical-summary"),
   techSlug: document.getElementById("tech-slug"),
   techSource: document.getElementById("tech-source"),
   techCriticTotal: document.getElementById("tech-critic-total"),
   techUserTotal: document.getElementById("tech-user-total"),
+  labelTechSlug: document.getElementById("label-tech-slug"),
+  labelTechSource: document.getElementById("label-tech-source"),
+  labelTechCriticTotal: document.getElementById("label-tech-critic-total"),
+  labelTechUserTotal: document.getElementById("label-tech-user-total"),
 };
+
+function loadSavedLocale() {
+  try {
+    const saved = localStorage.getItem(LANGUAGE_KEY);
+    if (saved === "en" || saved === "zh") {
+      return saved;
+    }
+  } catch {
+    return "zh";
+  }
+  return "zh";
+}
+
+function saveLocale(locale) {
+  try {
+    localStorage.setItem(LANGUAGE_KEY, locale);
+  } catch {
+    return;
+  }
+}
+
+function messages() {
+  return COPY[state.locale] || COPY.zh;
+}
+
+function t(key, params = {}) {
+  const value = messages()[key];
+  if (typeof value === "function") {
+    return value(params);
+  }
+  return value;
+}
 
 function normalizeSlug(value) {
   return String(value || "").trim();
@@ -66,7 +250,7 @@ function formatDate(value) {
   if (Number.isNaN(parsed.getTime())) {
     return String(value);
   }
-  return parsed.toLocaleString("zh-CN", {
+  return parsed.toLocaleString(state.locale === "en" ? "en-US" : "zh-CN", {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -84,7 +268,7 @@ function scoreText(value) {
 
 function countText(value) {
   const numeric = Number(value || 0);
-  return `${numeric} 条评论`;
+  return t("reviewCount", { count: numeric });
 }
 
 function escapeHtml(value) {
@@ -138,7 +322,7 @@ function renderRecentGames() {
   const recent = getRecentGames();
   if (recent.length === 0) {
     elements.recentList.classList.add("empty");
-    elements.recentList.textContent = "还没有最近访问记录。";
+    elements.recentList.textContent = t("recentEmpty");
     return;
   }
 
@@ -165,11 +349,9 @@ function renderSearchResults() {
 
   const totalMatches = Number(state.search.total_matches || matches.length || 0);
   elements.searchPanel.classList.remove("hidden");
-  elements.searchMeta.textContent = totalMatches > matches.length
-    ? `共 ${totalMatches} 个候选，当前展示前 ${matches.length} 个`
-    : `共 ${matches.length} 个候选`;
+  elements.searchMeta.textContent = t("searchMeta", { shown: matches.length, total: totalMatches });
   elements.searchResults.innerHTML = matches.map((match) => {
-    const title = match.title || match.slug || "未命名游戏";
+    const title = match.title || match.slug || t("unnamedGame");
     return `
       <button class="search-result-card" type="button" data-slug="${escapeHtml(match.slug || "")}">
         <h3 class="search-result-title">${escapeHtml(title)}</h3>
@@ -178,8 +360,18 @@ function renderSearchResults() {
   }).join("");
 }
 
-function setStatus(message, tone = "neutral") {
-  if (!elements.statusCard || !message || tone !== "error") {
+function clearStatus() {
+  state.status = null;
+  renderStatus();
+}
+
+function showError(key, params = {}) {
+  state.status = { key, params };
+  renderStatus();
+}
+
+function renderStatus() {
+  if (!elements.statusCard || !state.status) {
     if (!elements.statusCard) {
       return;
     }
@@ -188,8 +380,8 @@ function setStatus(message, tone = "neutral") {
     return;
   }
   elements.statusCard.classList.remove("hidden");
-  elements.statusCard.dataset.tone = tone;
-  elements.statusCard.innerHTML = message;
+  elements.statusCard.dataset.tone = "error";
+  elements.statusCard.innerHTML = t(state.status.key, state.status.params);
 }
 
 function showSearchRoute() {
@@ -211,22 +403,22 @@ function renderGame() {
   elements.emptyState.classList.add("hidden");
 
   const game = state.game;
-  elements.gameTitle.textContent = game.title || game.slug || "未命名游戏";
+  elements.gameTitle.textContent = game.title || game.slug || t("unnamedGame");
   elements.gamePlatform.textContent = game.platform || "-";
   elements.gameRelease.textContent = game.release_date || "-";
   elements.gameRating.textContent = game.rating || "-";
   elements.gameScrapedAt.textContent = formatDate(game.scraped_at);
-  elements.dataSourceBadge.textContent = game.auto_crawled ? "本次请求触发抓取" : "命中本地缓存";
+  elements.dataSourceBadge.textContent = game.auto_crawled ? t("dataSourceAutoCrawled") : t("dataSourceCached");
   elements.criticScore.textContent = scoreText(game.critic_score);
   elements.criticCount.textContent = countText(game.critic_review_count);
   elements.userScore.textContent = scoreText(game.user_score);
   elements.userCount.textContent = countText(game.user_review_count);
   elements.techSlug.textContent = game.slug || "-";
-  elements.techSource.textContent = game.auto_crawled ? "接口触发抓取后落库" : "直接读取现有数据库";
+  elements.techSource.textContent = game.auto_crawled ? t("techSourceAutoCrawled") : t("techSourceCached");
 
   if (game.cover_url) {
     elements.coverImage.src = game.cover_url;
-    elements.coverImage.alt = `${game.title || game.slug || "game"} cover`;
+    elements.coverImage.alt = `${game.title || game.slug || t("unnamedGame")} cover`;
     elements.coverImage.classList.remove("hidden");
     elements.coverPlaceholder.classList.add("hidden");
   } else {
@@ -238,13 +430,13 @@ function renderGame() {
 function reviewMeta(review, type) {
   if (type === "critic") {
     return {
-      source: review.publicationName || review.author || "Unknown critic",
+      source: review.publicationName || review.author || t("unknownCritic"),
       score: review.score ?? "-",
       date: review.date || "-",
     };
   }
   return {
-    source: review.author || "Unknown player",
+    source: review.author || t("unknownPlayer"),
     score: review.score ?? "-",
     date: review.date || "-",
   };
@@ -252,12 +444,12 @@ function reviewMeta(review, type) {
 
 function renderReviewCards(reviews, type, limit) {
   if (!reviews.length) {
-    return `<div class="review-empty">当前没有${type === "critic" ? "媒体" : "用户"}评论数据。</div>`;
+    return `<div class="review-empty">${type === "critic" ? t("noCriticReviews") : t("noUserReviews")}</div>`;
   }
 
   return reviews.slice(0, limit).map((review) => {
     const meta = reviewMeta(review, type);
-    const quote = review.quote || "该评论没有摘要文本。";
+    const quote = review.quote || t("missingQuote");
     return `
       <article class="review-card">
         <div class="review-head">
@@ -275,15 +467,17 @@ function renderReviews() {
   const criticReviews = state.reviews.critic_reviews || [];
   const userReviews = state.reviews.user_reviews || [];
   const counts = state.reviews.counts || {};
+  const criticCount = Number(counts.critic_reviews || criticReviews.length || 0);
+  const userCount = Number(counts.user_reviews || userReviews.length || 0);
 
   elements.reviewSummary.textContent = state.reviewsLoading
-    ? "正在加载评论数据..."
-    : `媒体 ${counts.critic_reviews || criticReviews.length} 条 · 用户 ${counts.user_reviews || userReviews.length} 条`;
+    ? t("reviewSummaryLoading")
+    : t("reviewSummaryCounts", { criticCount, userCount });
 
   elements.criticPanel.innerHTML = renderReviewCards(criticReviews, "critic", state.visibleCritic);
   elements.userPanel.innerHTML = renderReviewCards(userReviews, "user", state.visibleUser);
-  elements.techCriticTotal.textContent = String(counts.critic_reviews || criticReviews.length || 0);
-  elements.techUserTotal.textContent = String(counts.user_reviews || userReviews.length || 0);
+  elements.techCriticTotal.textContent = String(criticCount);
+  elements.techUserTotal.textContent = String(userCount);
 
   elements.criticMore.classList.toggle("hidden", criticReviews.length <= state.visibleCritic);
   elements.userMore.classList.toggle("hidden", userReviews.length <= state.visibleUser);
@@ -302,8 +496,9 @@ function renderReviews() {
 }
 
 function setLoading(isLoading) {
-  elements.submitButton.disabled = isLoading;
-  elements.submitButton.textContent = isLoading ? "检索中..." : "检索";
+  state.isBusy = Boolean(isLoading);
+  elements.submitButton.disabled = state.isBusy;
+  elements.submitButton.textContent = state.isBusy ? t("submitLoading") : t("submitIdle");
 }
 
 function openGameSlug(slug, replace = false) {
@@ -320,11 +515,64 @@ function openGameSlug(slug, replace = false) {
   window.location.assign(nextPath);
 }
 
+function applyLocale() {
+  document.documentElement.lang = t("htmlLang");
+  document.title = t("pageTitle");
+  elements.langSwitch.setAttribute("aria-label", t("languageGroupLabel"));
+  elements.langZh.classList.toggle("active", state.locale === "zh");
+  elements.langEn.classList.toggle("active", state.locale === "en");
+  elements.langZh.setAttribute("aria-pressed", state.locale === "zh" ? "true" : "false");
+  elements.langEn.setAttribute("aria-pressed", state.locale === "en" ? "true" : "false");
+  elements.pageTitle.textContent = t("pageTitle");
+  elements.intro.textContent = t("introHint");
+  elements.input.placeholder = t("inputPlaceholder");
+  elements.recentTitle.textContent = t("recentTitle");
+  elements.clearRecent.textContent = t("clearRecent");
+  elements.searchTitle.textContent = t("searchTitle");
+  elements.emptyTitle.textContent = t("emptyTitle");
+  elements.emptyCopy.textContent = t("emptyCopy");
+  elements.coverPlaceholder.textContent = t("noCover");
+  elements.profileKicker.textContent = t("profileKicker");
+  elements.labelPlatform.textContent = t("labelPlatform");
+  elements.labelRelease.textContent = t("labelRelease");
+  elements.labelRating.textContent = t("labelRating");
+  elements.labelScrapedAt.textContent = t("labelScrapedAt");
+  elements.criticScoreLabel.textContent = t("criticScoreLabel");
+  elements.userScoreLabel.textContent = t("userScoreLabel");
+  elements.reviewsTitle.textContent = t("reviewsTitle");
+  elements.reviewTabBar.setAttribute("aria-label", t("reviewTabsLabel"));
+  elements.tabCritic.textContent = t("tabCritic");
+  elements.tabUser.textContent = t("tabUser");
+  elements.criticMore.textContent = t("criticMore");
+  elements.userMore.textContent = t("userMore");
+  elements.technicalSummary.textContent = t("technicalSummary");
+  elements.labelTechSlug.textContent = t("techSlug");
+  elements.labelTechSource.textContent = t("techSource");
+  elements.labelTechCriticTotal.textContent = t("techCriticTotal");
+  elements.labelTechUserTotal.textContent = t("techUserTotal");
+
+  setLoading(state.isBusy);
+  renderRecentGames();
+  renderSearchResults();
+  renderGame();
+  renderReviews();
+  renderStatus();
+}
+
+function setLocale(locale) {
+  if (locale !== "zh" && locale !== "en") {
+    return;
+  }
+  state.locale = locale;
+  saveLocale(locale);
+  applyLocale();
+}
+
 async function fetchJson(url) {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
-  const payload = await response.json().catch(() => ({ ok: false, error: "响应解析失败" }));
+  const payload = await response.json().catch(() => ({ ok: false, error: t("errorResponseParse") }));
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error || `请求失败: ${response.status}`);
+    throw new Error(payload.error || t("errorRequestFailed", { status: response.status }));
   }
   return payload.data;
 }
@@ -332,7 +580,7 @@ async function fetchJson(url) {
 async function searchGames(query) {
   const normalized = normalizeSlug(query);
   if (!normalized) {
-    setStatus("请输入一个有效的游戏名。", "error");
+    showError("errorInvalidSearch");
     return;
   }
 
@@ -350,11 +598,11 @@ async function searchGames(query) {
   state.gameError = "";
   state.reviewsError = "";
 
+  clearStatus();
   setLoading(true);
   renderSearchResults();
   renderGame();
   renderReviews();
-  setStatus("<strong>正在搜索本地游戏索引。</strong><br>如果结果存在歧义，我会列出最接近的候选供你选择。");
 
   try {
     const searchResult = await fetchJson(`/api/search?q=${encodeURIComponent(normalized)}`);
@@ -365,33 +613,24 @@ async function searchGames(query) {
     renderSearchResults();
 
     if (searchResult.selected && searchResult.selected.slug) {
-      setStatus(
-        `<strong>已定位到匹配游戏。</strong><br>正在打开 <strong>${escapeHtml(searchResult.selected.title || searchResult.selected.slug)}</strong> 的详情页。`,
-        "success"
-      );
       openGameSlug(searchResult.selected.slug);
       return;
     }
 
     showSearchRoute();
 
-    if ((searchResult.matches || []).length) {
-      setStatus(
-        "<strong>找到多个可能匹配。</strong><br>请从下方候选中选择，或输入更完整的游戏名继续缩小范围。"
-      );
+    if (!(searchResult.matches || []).length) {
+      showError("errorNoMatch", { query: normalized });
       return;
     }
 
-    setStatus(
-      `<strong>没有找到匹配结果。</strong><br>当前本地索引里没有与 <strong>${escapeHtml(normalized)}</strong> 接近的游戏。`,
-      "error"
-    );
+    clearStatus();
   } catch (error) {
     if (requestId !== state.requestId) {
       return;
     }
     showSearchRoute();
-    setStatus(`<strong>搜索失败。</strong><br>${escapeHtml(String(error.message || error))}`, "error");
+    showError("errorSearchFailed", { error: String(error.message || error) });
   } finally {
     if (requestId === state.requestId) {
       setLoading(false);
@@ -402,7 +641,7 @@ async function searchGames(query) {
 async function loadSlug(slug) {
   const normalized = normalizeSlug(slug);
   if (!normalized) {
-    setStatus("无法识别当前游戏地址。", "error");
+    showError("errorInvalidRoute");
     return;
   }
 
@@ -419,11 +658,11 @@ async function loadSlug(slug) {
   state.gameError = "";
   state.reviewsError = "";
 
+  clearStatus();
   setLoading(true);
   renderSearchResults();
   renderGame();
   renderReviews();
-  setStatus("<strong>正在获取游戏基础信息。</strong><br>首次检索某个 slug 时，接口可能需要几秒到十几秒来抓取并落库。");
 
   try {
     const game = await fetchJson(`/api/game?slug=${encodeURIComponent(normalized)}`);
@@ -434,11 +673,6 @@ async function loadSlug(slug) {
     state.gameLoading = false;
     renderGame();
     saveRecentGame({ slug: normalized, title: game.title || normalized });
-    setStatus(
-      game.auto_crawled
-        ? "<strong>已完成游戏信息抓取。</strong><br>接下来加载媒体评论和用户评论。"
-        : "<strong>已命中本地缓存。</strong><br>接下来加载媒体评论和用户评论。"
-    );
 
     state.reviewsLoading = true;
     renderReviews();
@@ -449,10 +683,7 @@ async function loadSlug(slug) {
     state.reviews = reviews;
     state.reviewsLoading = false;
     renderReviews();
-    setStatus(
-      `<strong>已完成检索。</strong><br>当前显示 <strong>${escapeHtml(normalized)}</strong> 的游戏资料和评论。`,
-      "success"
-    );
+    clearStatus();
   } catch (error) {
     if (requestId !== state.requestId) {
       return;
@@ -462,7 +693,7 @@ async function loadSlug(slug) {
     state.gameError = String(error.message || error);
     renderReviews();
     renderGame();
-    setStatus(`<strong>检索失败。</strong><br>${escapeHtml(state.gameError)}`, "error");
+    showError("errorLookupFailed", { error: state.gameError });
   } finally {
     if (requestId === state.requestId) {
       setLoading(false);
@@ -489,7 +720,7 @@ function applyRoute(slug, replace = false) {
     renderSearchResults();
     renderGame();
     renderReviews();
-    setStatus("");
+    clearStatus();
   }
 }
 
@@ -504,6 +735,14 @@ function routeSlugFromPath() {
 elements.form.addEventListener("submit", (event) => {
   event.preventDefault();
   searchGames(elements.input.value);
+});
+
+elements.langZh.addEventListener("click", () => {
+  setLocale("zh");
+});
+
+elements.langEn.addEventListener("click", () => {
+  setLocale("en");
 });
 
 elements.recentList.addEventListener("click", (event) => {
@@ -567,11 +806,11 @@ window.addEventListener("popstate", () => {
     renderSearchResults();
     renderGame();
     renderReviews();
-    setStatus("");
+    clearStatus();
   }
 });
 
-renderRecentGames();
+applyLocale();
 resetSearchState();
 renderSearchResults();
 renderReviews();
@@ -579,5 +818,5 @@ const initialSlug = routeSlugFromPath();
 if (initialSlug) {
   applyRoute(initialSlug, true);
 } else {
-  setStatus("");
+  clearStatus();
 }

@@ -24,7 +24,6 @@ from .config import (
     DEFAULT_TIMEOUT_SECONDS,
 )
 from .cover_downloader import CoverImageDownloader
-from .exporter import export_sqlite_to_excel
 from .scraper import MetacriticScraper
 from .slug_search import format_slug_search_match, search_slug_candidates
 from .storage import APP_TABLE_NAMES, SQLiteStorage, load_slug_search_candidates_from_db
@@ -56,6 +55,7 @@ INTERACTIVE_HELP_TITLE_EN = "Interactive Help"
 INTERACTIVE_HELP_TITLE_ZH = "交互帮助"
 INTERACTIVE_HELP_SUBTITLE_EN = "Run commands directly at the gamecritic> prompt."
 INTERACTIVE_HELP_SUBTITLE_ZH = "在当前 gamecritic> 提示符里直接输入命令。"
+INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT = "games total=... | game_slugs total=... | last full sync=loading"
 INTERACTIVE_HELP_SECTIONS = (
     (
         "Core Workflow",
@@ -757,6 +757,8 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
 
 
 def run_export_excel(args: argparse.Namespace) -> int:
+    from .exporter import export_sqlite_to_excel
+
     counts = export_sqlite_to_excel(
         db_path=args.db,
         output_path=args.output,
@@ -1718,6 +1720,18 @@ def _interactive_game_slugs_status_text(db_path: str) -> str:
     return f"games total={games_total} | game_slugs total={total} | last full sync={last_updated}"
 
 
+def _schedule_interactive_game_slugs_status_refresh(
+    refresh_game_slugs_status: Callable[[], None],
+) -> threading.Thread:
+    worker = threading.Thread(
+        target=refresh_game_slugs_status,
+        name="interactive-status-refresh",
+        daemon=True,
+    )
+    worker.start()
+    return worker
+
+
 def _interactive_command_is_running(running_command: dict[str, object | None]) -> bool:
     thread = running_command.get("thread")
     if not isinstance(thread, threading.Thread):
@@ -2046,7 +2060,7 @@ def run_interactive() -> int:
     previous_no_cpr = os.environ.get("PROMPT_TOOLKIT_NO_CPR")
     os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
 
-    status_state = {"text": _interactive_game_slugs_status_text(str(settings["db"]))}
+    status_state = {"text": INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT}
 
     class _InteractivePromptSession(PromptSession):
         def _create_layout(self):
@@ -2169,6 +2183,7 @@ def run_interactive() -> int:
             FormattedText(_interactive_welcome_fragments()),
             style=output_style,
         )
+    _schedule_interactive_game_slugs_status_refresh(_refresh_interactive_game_slugs_status)
 
     try:
         with patch_stdout():

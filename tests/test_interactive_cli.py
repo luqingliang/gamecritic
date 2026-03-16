@@ -14,6 +14,7 @@ from gamecritic.cli import (
     INTERACTIVE_HELP_SAMPLE_SIZE,
     INTERACTIVE_BACKGROUND_COMMANDS,
     GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
+    INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT,
     INTERACTIVE_WELCOME_CONTENT_WIDTH,
     INTERACTIVE_WELCOME_TITLE,
     LOG_BULLET,
@@ -30,6 +31,7 @@ from gamecritic.cli import (
     _interactive_command_is_running,
     _interactive_game_slugs_status_text,
     _interactive_help_hint_text,
+    _schedule_interactive_game_slugs_status_refresh,
     _interactive_title_art_lines,
     _interactive_welcome_rows,
     _interactive_defaults,
@@ -48,6 +50,7 @@ from gamecritic.cli import (
     run_crawl_reviews,
     run_clear_db,
     run_download_covers,
+    run_export_excel,
     run_search_slug,
     run_sync_slugs,
 )
@@ -57,6 +60,14 @@ from gamecritic.storage import SQLiteStorage
 
 
 class InteractiveCliParsingTestCase(unittest.TestCase):
+    def test_schedule_interactive_game_slugs_status_refresh_runs_in_background(self) -> None:
+        refreshed = threading.Event()
+
+        worker = _schedule_interactive_game_slugs_status_refresh(refreshed.set)
+
+        self.assertTrue(worker.daemon)
+        self.assertTrue(refreshed.wait(1.0))
+
     def test_interactive_crawl_enables_print_summary(self) -> None:
         settings = _interactive_defaults()
         output: list[str] = []
@@ -394,6 +405,22 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         args = parser.parse_args(["export-excel"])
         self.assertEqual(args.command, "export-excel")
         self.assertEqual(set(vars(args)), {"verbose", "command"})
+
+    def test_run_export_excel_imports_exporter_on_demand(self) -> None:
+        args = argparse.Namespace(db="data/gamecritic.db", output="data/export.xlsx")
+
+        with patch("gamecritic.exporter.export_sqlite_to_excel", return_value={
+            "games_rows": 1,
+            "critic_reviews_rows": 2,
+            "user_reviews_rows": 3,
+        }) as export_mock:
+            exit_code = run_export_excel(args)
+
+        self.assertEqual(exit_code, 0)
+        export_mock.assert_called_once_with(
+            db_path="data/gamecritic.db",
+            output_path="data/export.xlsx",
+        )
 
     def test_clear_db_parser_defaults(self) -> None:
         parser = build_parser()
@@ -1717,6 +1744,12 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 _interactive_game_slugs_status_text(str(missing_db_path)),
                 "games total=0 | game_slugs total=0 | last full sync=never",
             )
+
+    def test_interactive_game_slugs_status_loading_text(self) -> None:
+        self.assertEqual(
+            INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT,
+            "games total=... | game_slugs total=... | last full sync=loading",
+        )
 
     def test_interactive_command_is_running_clears_finished_thread(self) -> None:
         worker = threading.Thread(target=lambda: None)
