@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 APP_TABLE_NAMES = (
     "critic_reviews",
@@ -23,6 +23,17 @@ def _utc_now_iso() -> str:
 
 def _json_dumps(data: object) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_loads(data: object | None) -> Any:
+    if data is None:
+        return None
+    if not isinstance(data, str):
+        return data
+    normalized = data.strip()
+    if not normalized:
+        return None
+    return json.loads(normalized)
 
 
 def _merge_slug_search_candidates(
@@ -512,6 +523,99 @@ class SQLiteStorage:
             cursor = self.conn.execute(query, params)
             rows = cursor.fetchall()
         return [(str(row[0]), str(row[1])) for row in rows]
+
+    def get_game(self, slug: str) -> dict[str, Any] | None:
+        normalized_slug = slug.strip()
+        if not normalized_slug:
+            return None
+
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT
+                    slug,
+                    game_id,
+                    title,
+                    platform,
+                    release_date,
+                    premiere_year,
+                    rating,
+                    critic_score,
+                    critic_review_count,
+                    user_score,
+                    user_review_count,
+                    cover_url,
+                    product_json,
+                    critic_summary_json,
+                    user_summary_json,
+                    scraped_at
+                FROM games
+                WHERE slug = ?
+                """,
+                (normalized_slug,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "slug": str(row[0]),
+            "game_id": row[1],
+            "title": row[2],
+            "platform": row[3],
+            "release_date": row[4],
+            "premiere_year": row[5],
+            "rating": row[6],
+            "critic_score": row[7],
+            "critic_review_count": row[8],
+            "user_score": row[9],
+            "user_review_count": row[10],
+            "cover_url": row[11],
+            "product": _json_loads(row[12]),
+            "critic_summary": _json_loads(row[13]),
+            "user_summary": _json_loads(row[14]),
+            "scraped_at": row[15],
+        }
+
+    def list_critic_review_payloads(
+        self,
+        slug: str,
+    ) -> list[dict[str, Any]]:
+        normalized_slug = slug.strip()
+        if not normalized_slug:
+            return []
+
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT review_json
+                FROM critic_reviews
+                WHERE slug = ?
+                ORDER BY review_date DESC, review_key ASC
+                """,
+                (normalized_slug,),
+            ).fetchall()
+        return [payload for payload in (_json_loads(row[0]) for row in rows) if isinstance(payload, dict)]
+
+    def list_user_review_payloads(
+        self,
+        slug: str,
+    ) -> list[dict[str, Any]]:
+        normalized_slug = slug.strip()
+        if not normalized_slug:
+            return []
+
+        with self._lock:
+            rows = self.conn.execute(
+                """
+                SELECT review_json
+                FROM user_reviews
+                WHERE slug = ?
+                ORDER BY review_date DESC, review_id ASC
+                """,
+                (normalized_slug,),
+            ).fetchall()
+        return [payload for payload in (_json_loads(row[0]) for row in rows) if isinstance(payload, dict)]
 
     def get_state(self, key: str) -> str | None:
         with self._lock:

@@ -260,6 +260,8 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertEqual(settings["covers_dir"], "data/covers")
         self.assertFalse(settings["overwrite_covers"])
         self.assertEqual(settings["export_output"], "data/excel/gamecritic_export.xlsx")
+        self.assertEqual(settings["server_host"], "127.0.0.1")
+        self.assertEqual(settings["server_port"], 8000)
         self.assertNotIn("include_raw_json", settings)
 
     def test_set_command_persists_shared_settings(self) -> None:
@@ -423,7 +425,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("crawl-reviews", output[0])
         self.assertIn("search-slug", output[0])
         self.assertIn("clear-db", output[0])
-        self.assertIn("请求停止当前后台抓取/下载任务", output[0])
+        self.assertIn("请求停止当前后台任务或 Web 服务", output[0])
 
     def test_help_with_zh_argument(self) -> None:
         settings = _interactive_defaults()
@@ -451,8 +453,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("show | show-zh", output[0])
         self.assertIn("crawl-reviews", output[0])
         self.assertIn("search-slug", output[0])
+        self.assertIn("serve", output[0])
         self.assertIn("clear-db", output[0])
-        self.assertIn("current background crawl/download task", output[0])
+        self.assertIn("current background task or web service", output[0])
 
     def test_help_command_prioritizes_core_workflow_commands(self) -> None:
         settings = _interactive_defaults()
@@ -480,6 +483,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 "sync-slugs",
                 "download-covers [slug]",
                 "export-excel [output_path]",
+                "serve",
             ],
         )
 
@@ -595,6 +599,8 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 "backoff",
                 "delay",
                 "export_output",
+                "server_host",
+                "server_port",
             ],
         )
 
@@ -743,6 +749,41 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertTrue(keep_running)
         self.assertEqual(output, ["Usage: download-covers [slug]"])
+
+    def test_interactive_serve_uses_settings_and_stop_event(self) -> None:
+        settings = _interactive_defaults()
+        settings["server_host"] = "0.0.0.0"
+        settings["server_port"] = 9100
+        output: list[str] = []
+        captured: dict[str, object] = {}
+        stop_event = threading.Event()
+
+        def _fake_run_with_captured_stdout(func, namespace, emit) -> None:
+            captured["func_name"] = getattr(func, "__name__", "")
+            captured["command"] = getattr(namespace, "command", None)
+            captured["host"] = getattr(namespace, "host", None)
+            captured["port"] = getattr(namespace, "port", None)
+            captured["stop_event"] = getattr(namespace, "stop_event", None)
+            emit("[done] exit_code=130")
+
+        with patch("gamecritic.cli._run_with_captured_stdout", side_effect=_fake_run_with_captured_stdout):
+            keep_running = _run_interactive_command(["serve"], settings, output.append, stop_event=stop_event)
+
+        self.assertTrue(keep_running)
+        self.assertEqual(captured.get("func_name"), "run_serve")
+        self.assertEqual(captured.get("command"), "serve")
+        self.assertEqual(captured.get("host"), "0.0.0.0")
+        self.assertEqual(captured.get("port"), 9100)
+        self.assertIs(captured.get("stop_event"), stop_event)
+
+    def test_interactive_serve_rejects_extra_args(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+
+        keep_running = _run_interactive_command(["serve", "extra"], settings, output.append)
+
+        self.assertTrue(keep_running)
+        self.assertEqual(output, ["Usage: serve"])
 
     def test_stop_command_without_running_background_task(self) -> None:
         settings = _interactive_defaults()
@@ -1434,7 +1475,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(any(line.startswith("portal  # ") for line in printed_lines[1:]))
         self.assertTrue(any(line.startswith("portal-remastered  # ") for line in printed_lines[1:]))
 
-    def test_run_search_slug_prints_low_confidence_single_candidate(self) -> None:
+    def test_run_search_slug_filters_out_single_candidate_below_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -1459,10 +1500,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 exit_code = run_search_slug(args)
 
         self.assertEqual(exit_code, 2)
-        printed_lines = [call.args[0] for call in print_mock.call_args_list]
-        self.assertEqual(printed_lines[0], "No confident slug match found for query: RE Village DLC")
-        self.assertEqual(len(printed_lines), 2)
-        self.assertTrue(printed_lines[1].startswith("resident-evil-village  # "))
+        print_mock.assert_called_once_with(
+            "No slug matched query: RE Village DLC\nTip: run 'sync-slugs' first to build the local slug index."
+        )
 
     def test_run_search_slug_recommends_sync_when_no_match_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1568,14 +1608,15 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("Quick Start", banner_text)
         self.assertIn("Input Tips", banner_text)
         self.assertIn("help or help-zh", banner_text)
-        self.assertIn("crawl/download task", banner_text)
+        self.assertIn("background task or web service", banner_text)
         self.assertIn("crawl-one <slug>", banner_text)
         self.assertIn("search-slug <game_name>", banner_text)
         self.assertIn("crawl-reviews [slug]", banner_text)
+        self.assertIn("serve", banner_text)
         self.assertIn("Up / Down", banner_text)
 
     def test_interactive_welcome_rows_prioritize_core_commands(self) -> None:
-        quick_start_labels = [label for kind, label, _ in _interactive_welcome_rows() if kind == "item"][:7]
+        quick_start_labels = [label for kind, label, _ in _interactive_welcome_rows() if kind == "item"][:8]
         self.assertEqual(
             quick_start_labels,
             [
@@ -1583,6 +1624,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 "search-slug <game_name>",
                 "crawl-one <slug>",
                 "crawl-reviews [slug]",
+                "serve",
                 "show",
                 "stop",
                 "help or help-zh",
@@ -1604,6 +1646,9 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
     def test_search_slug_runs_as_background_interactive_command(self) -> None:
         self.assertIn("search-slug", INTERACTIVE_BACKGROUND_COMMANDS)
+
+    def test_serve_runs_as_background_interactive_command(self) -> None:
+        self.assertIn("serve", INTERACTIVE_BACKGROUND_COMMANDS)
 
     def test_interactive_game_slugs_status_text_uses_sync_state_update_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

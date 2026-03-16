@@ -9,6 +9,10 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
+- New `serve` command for starting a local HTTP API service backed by the shared CLI settings.
+- New `search` web API for resolving game-name queries to local slug matches and candidate lists.
+- HTTP endpoints for fetching one game's stored data and for backfilling + returning one game's review payloads.
+- A user-facing frontend served from `gamecritic serve`, including game-name search, a lookup homepage, and `/game/<slug>` detail view.
 
 ## [0.2.0] - 2026-03-16
 

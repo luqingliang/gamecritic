@@ -80,7 +80,13 @@ gamecritic
   "overwrite_covers": false,
 
   // Excel 导出文件路径
-  "export_output": "data/excel/gamecritic_export.xlsx"
+  "export_output": "data/excel/gamecritic_export.xlsx",
+
+  // HTTP 服务监听地址
+  "server_host": "127.0.0.1",
+
+  // HTTP 服务监听端口
+  "server_port": 8000
 }
 ```
 
@@ -117,9 +123,37 @@ gamecritic download-covers the-legend-of-zelda-breath-of-the-wild
 # 导出 SQLite 数据到 Excel
 gamecritic export-excel
 
+# 启动 HTTP API 服务
+gamecritic serve
+
 # 在保留表结构的前提下一键清空所有业务表
 gamecritic clear-db
 ```
+
+## HTTP API
+
+启动本地服务：
+
+```bash
+gamecritic serve
+```
+
+服务根路径现在会直接提供一个面向用户的前端页面：
+
+- `GET /`：slug 检索首页。
+- `GET /game/<slug>`：单个游戏详情页直达链接。
+
+可用接口：
+
+- `GET /api/search?q=<game_name>`：按游戏名或 slug 搜索本地索引，返回最佳匹配和候选列表。
+- `GET /api/game?slug=<slug>`：返回单个游戏的落库数据；如果 `games` 表里没有该 slug，会先自动抓取并落库，再返回结果。
+- `GET /api/reviews?slug=<slug>`：为指定 slug 补抓媒体评论和用户评论，并返回当前数据库中的评论数据。
+
+同时也支持 path 风格：
+
+- `GET /api/search/<game_name>`
+- `GET /api/games/<slug>`
+- `GET /api/games/<slug>/reviews`
 
 ## 数据表结构
 

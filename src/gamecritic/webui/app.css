@@ -1,0 +1,688 @@
+:root {
+  --bg: #f3efe3;
+  --bg-strong: #e3dbc8;
+  --panel: rgba(252, 249, 242, 0.82);
+  --panel-strong: rgba(255, 252, 246, 0.92);
+  --ink: #191612;
+  --muted: #665c4e;
+  --line: rgba(25, 22, 18, 0.12);
+  --accent: #d94f04;
+  --accent-deep: #8c2f00;
+  --lime: #758f34;
+  --shadow: 0 24px 60px rgba(48, 33, 18, 0.14);
+  --radius-lg: 28px;
+  --radius-md: 18px;
+  --radius-sm: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(217, 79, 4, 0.14), transparent 30%),
+    radial-gradient(circle at 88% 12%, rgba(117, 143, 52, 0.12), transparent 24%),
+    linear-gradient(180deg, #f7f2e6 0%, #ede3d1 55%, #e4d7c0 100%);
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.page-shell {
+  position: relative;
+  width: min(1180px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 28px 0 56px;
+}
+
+.ambient {
+  position: fixed;
+  width: 34vw;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: blur(24px);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.ambient-left {
+  left: -12vw;
+  top: 12vh;
+  background: radial-gradient(circle, rgba(217, 79, 4, 0.3), transparent 64%);
+}
+
+.ambient-right {
+  right: -10vw;
+  top: 42vh;
+  background: radial-gradient(circle, rgba(117, 143, 52, 0.28), transparent 64%);
+}
+
+.hero,
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+.hero {
+  display: grid;
+  gap: 24px;
+  padding: 34px;
+  background:
+    linear-gradient(145deg, rgba(255, 250, 240, 0.9), rgba(244, 235, 218, 0.86)),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cg fill='none' stroke='rgba(25,22,18,0.05)' stroke-width='1'%3E%3Cpath d='M0 80h160M80 0v160'/%3E%3Ccircle cx='80' cy='80' r='38'/%3E%3C/g%3E%3C/svg%3E");
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 36px;
+  box-shadow: var(--shadow);
+  animation: rise-in 420ms ease-out;
+}
+
+.eyebrow,
+.section-kicker {
+  margin: 0;
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-size: 0.82rem;
+  color: var(--accent-deep);
+}
+
+.hero-copy {
+  display: grid;
+  gap: 14px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2.3rem, 5vw, 4.8rem);
+  line-height: 0.95;
+  max-width: 11ch;
+}
+
+.hero-text {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.7;
+  max-width: 54ch;
+  color: var(--muted);
+}
+
+.lookup-form,
+.search-panel,
+.recent-panel,
+.status-card,
+.game-card,
+.reviews-panel,
+.technical-panel,
+.empty-state {
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+.lookup-form {
+  padding: 22px;
+}
+
+.lookup-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.lookup-row input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px 18px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--ink);
+  transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+
+.lookup-row input:focus {
+  outline: none;
+  border-color: rgba(217, 79, 4, 0.58);
+  box-shadow: 0 0 0 4px rgba(217, 79, 4, 0.12);
+  transform: translateY(-1px);
+}
+
+.lookup-row button,
+.ghost-button,
+.tab,
+.more-button {
+  border: 0;
+  cursor: pointer;
+  transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+}
+
+.lookup-row button {
+  padding: 0 24px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--accent), #ff7b37);
+  color: #fff5ee;
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.lookup-row button:hover,
+.ghost-button:hover,
+.tab:hover,
+.more-button:hover {
+  transform: translateY(-1px);
+}
+
+.lookup-row button:disabled,
+.ghost-button:disabled,
+.more-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.lookup-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.lookup-intro {
+  margin: 0 0 12px;
+}
+
+.lookup-recent {
+  margin-top: 14px;
+}
+
+.lookup-recent .section-head {
+  align-items: center;
+}
+
+.lookup-recent .section-head h2 {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.recent-panel,
+.search-panel,
+.status-card,
+.empty-state,
+.game-card,
+.reviews-panel,
+.technical-panel {
+  padding: 22px;
+}
+
+.section-head {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.section-head h2,
+.empty-state h2 {
+  margin: 6px 0 0;
+  font-size: clamp(1.5rem, 2vw, 2.4rem);
+}
+
+.ghost-button {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(25, 22, 18, 0.06);
+  color: var(--muted);
+}
+
+.recent-list {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.search-meta {
+  color: var(--muted);
+  text-align: right;
+  max-width: 30ch;
+}
+
+.recent-list.empty {
+  color: var(--muted);
+}
+
+.recent-chip {
+  flex: 0 0 auto;
+  max-width: 180px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(25, 22, 18, 0.08);
+  background: rgba(255, 255, 255, 0.68);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.88rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lookup-recent .ghost-button {
+  flex: 0 0 auto;
+  padding: 7px 11px;
+  font-size: 0.88rem;
+  line-height: 1.2;
+}
+
+.search-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.search-result-card {
+  width: 100%;
+  padding: 18px;
+  border: 1px solid rgba(25, 22, 18, 0.08);
+  border-radius: 20px;
+  background: var(--panel-strong);
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  text-align: left;
+}
+
+.search-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.search-result-title {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.search-result-slug {
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  color: var(--accent-deep);
+  letter-spacing: 0.03em;
+}
+
+.search-result-meta {
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.content {
+  display: grid;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.status-card {
+  color: var(--accent-deep);
+  line-height: 1.65;
+  border-color: rgba(217, 79, 4, 0.22);
+  background: rgba(255, 240, 232, 0.92);
+}
+
+.status-card strong {
+  color: var(--ink);
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+}
+
+.empty-state p {
+  margin: 12px auto 0;
+  max-width: 48ch;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.results {
+  display: grid;
+  gap: 20px;
+}
+
+.game-card {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.82fr) minmax(0, 1.18fr);
+  gap: 24px;
+}
+
+.cover-wrap {
+  position: relative;
+  min-height: 340px;
+  border-radius: 22px;
+  overflow: hidden;
+  background:
+    linear-gradient(150deg, rgba(25, 22, 18, 0.94), rgba(45, 36, 22, 0.78)),
+    radial-gradient(circle at 20% 20%, rgba(255, 123, 55, 0.2), transparent 36%);
+}
+
+.cover-placeholder,
+.cover-image {
+  width: 100%;
+  height: 100%;
+}
+
+.cover-placeholder {
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.72);
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.cover-image {
+  object-fit: cover;
+}
+
+.game-meta {
+  display: grid;
+  gap: 20px;
+  align-content: start;
+}
+
+.title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+#game-title {
+  margin: 8px 0 0;
+  font-size: clamp(2rem, 3.2vw, 3.4rem);
+  line-height: 0.98;
+}
+
+.data-source-badge {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(117, 143, 52, 0.16);
+  color: #3d4f10;
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.facts-grid,
+.score-grid,
+.technical-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.facts-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.fact,
+.technical-grid > div {
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--panel-strong);
+  border: 1px solid rgba(25, 22, 18, 0.06);
+}
+
+.fact dt,
+.technical-grid dt {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.fact dd,
+.technical-grid dd {
+  margin: 8px 0 0;
+  font-size: 1.06rem;
+}
+
+.score-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.score-card {
+  padding: 18px;
+  border-radius: 22px;
+  color: #fff;
+  position: relative;
+  overflow: hidden;
+}
+
+.score-card::before {
+  content: "";
+  position: absolute;
+  inset: auto -18% -42% auto;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.score-card.critic {
+  background: linear-gradient(135deg, #151b11, #70852f);
+}
+
+.score-card.user {
+  background: linear-gradient(135deg, #2d1409, #d94f04);
+}
+
+.score-label,
+.score-sub {
+  margin: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.score-value {
+  position: relative;
+  z-index: 1;
+  margin: 12px 0 8px;
+  font-size: clamp(2.4rem, 4vw, 4rem);
+  line-height: 0.9;
+}
+
+.review-summary {
+  color: var(--muted);
+  text-align: right;
+  max-width: 28ch;
+}
+
+.tab-bar {
+  display: inline-flex;
+  margin-top: 20px;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(25, 22, 18, 0.06);
+}
+
+.tab {
+  padding: 12px 18px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.tab.active {
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ink);
+  box-shadow: 0 8px 18px rgba(25, 22, 18, 0.08);
+}
+
+.review-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.review-card {
+  padding: 18px;
+  border-radius: 20px;
+  background: var(--panel-strong);
+  border: 1px solid rgba(25, 22, 18, 0.08);
+  animation: rise-in 320ms ease-out;
+}
+
+.review-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.review-source {
+  margin: 0;
+  font-size: 1.06rem;
+}
+
+.review-score {
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  color: var(--accent-deep);
+  white-space: nowrap;
+}
+
+.review-date {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.review-quote {
+  margin: 14px 0 0;
+  font-size: 1rem;
+  line-height: 1.74;
+  color: var(--ink);
+}
+
+.review-empty {
+  padding: 22px;
+  border-radius: 20px;
+  background: rgba(25, 22, 18, 0.04);
+  color: var(--muted);
+  text-align: center;
+}
+
+.more-button {
+  margin-top: 14px;
+  padding: 14px 18px;
+  border-radius: 18px;
+  background: rgba(25, 22, 18, 0.08);
+  color: var(--ink);
+}
+
+.technical-panel {
+  color: var(--muted);
+}
+
+.technical-panel summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.technical-grid {
+  margin-top: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hidden {
+  display: none !important;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 860px) {
+  .page-shell {
+    width: min(100vw - 18px, 960px);
+    padding-top: 14px;
+  }
+
+  .hero,
+  .search-panel,
+  .recent-panel,
+  .lookup-form,
+  .status-card,
+  .game-card,
+  .reviews-panel,
+  .technical-panel,
+  .empty-state {
+    border-radius: 24px;
+  }
+
+  .hero,
+  .search-panel,
+  .recent-panel,
+  .lookup-form,
+  .status-card,
+  .game-card,
+  .reviews-panel,
+  .technical-panel {
+    padding: 18px;
+  }
+
+  .lookup-row,
+  .search-result-head,
+  .title-row,
+  .section-head,
+  .review-head {
+    flex-direction: column;
+  }
+
+  .lookup-recent .section-head {
+    flex-direction: row;
+  }
+
+  .game-card,
+  .facts-grid,
+  .score-grid,
+  .technical-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cover-wrap {
+    min-height: 280px;
+  }
+
+  .review-summary {
+    text-align: left;
+  }
+
+  .search-meta {
+    text-align: left;
+  }
+}

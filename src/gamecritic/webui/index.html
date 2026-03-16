@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gamecritic</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="page-shell">
+    <div class="ambient ambient-left"></div>
+    <div class="ambient ambient-right"></div>
+
+    <header class="hero">
+      <div class="hero-copy">
+        <h1>Gamecritic</h1>
+      </div>
+
+      <form id="slug-form" class="lookup-form" novalidate>
+        <p class="lookup-hint lookup-intro">输入游戏名后开始检索，高置信结果会直接打开详情页。</p>
+        <div class="lookup-row">
+          <input
+            id="slug-input"
+            name="slug"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="例如：Elden Ring"
+          >
+          <button id="submit-button" type="submit">检索</button>
+        </div>
+        <section class="lookup-recent" aria-labelledby="recent-title">
+          <div class="section-head">
+            <h2 id="recent-title">最近访问</h2>
+            <button id="clear-recent" class="ghost-button" type="button">清空</button>
+          </div>
+          <div id="recent-list" class="recent-list empty">还没有最近访问记录。</div>
+        </section>
+      </form>
+
+      <section id="search-panel" class="search-panel hidden" aria-labelledby="search-title">
+        <div class="section-head">
+          <div>
+            <h2 id="search-title">搜索结果</h2>
+          </div>
+          <div id="search-meta" class="search-meta"></div>
+        </div>
+        <div id="search-results" class="search-results"></div>
+      </section>
+    </header>
+
+    <main class="content">
+      <section id="status-card" class="status-card hidden" aria-live="polite"></section>
+
+      <section id="empty-state" class="empty-state">
+        <h2>从一个游戏名开始</h2>
+        <p>输入游戏名，系统会先从本地索引匹配最接近的游戏，再获取基础信息和评论数据。</p>
+      </section>
+
+      <section id="results" class="results hidden">
+        <article class="game-card">
+          <div class="cover-wrap">
+            <div id="cover-placeholder" class="cover-placeholder">NO COVER</div>
+            <img id="cover-image" class="cover-image hidden" alt="">
+          </div>
+
+          <div class="game-meta">
+            <div class="title-row">
+              <div>
+                <p class="section-kicker">GAME PROFILE</p>
+                <h2 id="game-title">-</h2>
+              </div>
+              <div id="data-source-badge" class="data-source-badge">本地缓存</div>
+            </div>
+
+            <dl class="facts-grid">
+              <div class="fact">
+                <dt>平台</dt>
+                <dd id="game-platform">-</dd>
+              </div>
+              <div class="fact">
+                <dt>发售时间</dt>
+                <dd id="game-release">-</dd>
+              </div>
+              <div class="fact">
+                <dt>评级</dt>
+                <dd id="game-rating">-</dd>
+              </div>
+              <div class="fact">
+                <dt>抓取时间</dt>
+                <dd id="game-scraped-at">-</dd>
+              </div>
+            </dl>
+
+            <div class="score-grid">
+              <section class="score-card critic">
+                <p class="score-label">媒体评分</p>
+                <div class="score-value" id="critic-score">-</div>
+                <p class="score-sub" id="critic-count">0 条评论</p>
+              </section>
+              <section class="score-card user">
+                <p class="score-label">用户评分</p>
+                <div class="score-value" id="user-score">-</div>
+                <p class="score-sub" id="user-count">0 条评论</p>
+              </section>
+            </div>
+          </div>
+        </article>
+
+        <section class="reviews-panel">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">REVIEW STREAM</p>
+              <h2>评论视图</h2>
+            </div>
+            <div id="review-summary" class="review-summary">尚未加载评论。</div>
+          </div>
+
+          <div class="tab-bar" role="tablist" aria-label="评论类型">
+            <button id="tab-critic" class="tab active" type="button" role="tab" aria-selected="true">媒体评论</button>
+            <button id="tab-user" class="tab" type="button" role="tab" aria-selected="false">用户评论</button>
+          </div>
+
+          <div id="critic-panel" class="review-list" role="tabpanel"></div>
+          <button id="critic-more" class="more-button hidden" type="button">加载更多媒体评论</button>
+
+          <div id="user-panel" class="review-list hidden" role="tabpanel"></div>
+          <button id="user-more" class="more-button hidden" type="button">加载更多用户评论</button>
+        </section>
+
+        <details class="technical-panel">
+          <summary>技术信息</summary>
+          <dl class="technical-grid">
+            <div>
+              <dt>slug</dt>
+              <dd id="tech-slug">-</dd>
+            </div>
+            <div>
+              <dt>数据来源</dt>
+              <dd id="tech-source">-</dd>
+            </div>
+            <div>
+              <dt>媒体评论数量</dt>
+              <dd id="tech-critic-total">0</dd>
+            </div>
+            <div>
+              <dt>用户评论数量</dt>
+              <dd id="tech-user-total">0</dd>
+            </div>
+          </dl>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

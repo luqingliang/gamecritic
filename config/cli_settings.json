@@ -12,5 +12,7 @@
   "max_review_pages": 1,
   "overwrite_covers": false,
   "review_page_size": 50,
+  "server_host": "127.0.0.1",
+  "server_port": 8000,
   "timeout": 30.0
 }
