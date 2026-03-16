@@ -101,19 +101,19 @@ gamecritic search-slug "The Legend of Zelda Breath of the Wild"
 # Crawl one game by slug
 gamecritic crawl-one the-legend-of-zelda-breath-of-the-wild
 
-# Backfill reviews for games already stored in `games`
+# Backfill reviews for all crawled games
 gamecritic crawl-reviews
 
-# Backfill reviews for one crawled game by slug
+# Or pass an optional `[slug]` to backfill one game
 gamecritic crawl-reviews the-legend-of-zelda-breath-of-the-wild
 
 # Sync all sitemap slugs into SQLite
 gamecritic sync-slugs
 
-# Batch download cover image files from already crawled games
+# Download covers for all crawled games
 gamecritic download-covers
 
-# Download one game's cover image by slug
+# Or pass an optional `[slug]` to download one game's cover
 gamecritic download-covers the-legend-of-zelda-breath-of-the-wild
 
 # Export SQLite data to Excel
