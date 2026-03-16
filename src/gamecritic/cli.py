@@ -400,9 +400,64 @@ def _slug_text(slug: str) -> str:
     return slug.replace("-", " ").replace("_", " ").strip()
 
 
-def _search_tokens(text: str) -> set[str]:
+def _search_token_list(text: str) -> list[str]:
     normalized = _normalize_search_text(text)
-    return {token for token in normalized.split(" ") if token}
+    return [token for token in normalized.split(" ") if token]
+
+
+def _search_tokens(text: str) -> set[str]:
+    return set(_search_token_list(text))
+
+
+def _match_query_token_to_candidate_group(
+    query_token: str,
+    candidate_tokens: Sequence[str],
+    start_index: int,
+) -> int | None:
+    if len(query_token) <= 1:
+        return None
+
+    acronym = ""
+    for index in range(start_index, len(candidate_tokens)):
+        token = candidate_tokens[index]
+        if not token:
+            continue
+        acronym += token[0]
+        if len(acronym) > len(query_token) or not query_token.startswith(acronym):
+            return None
+        if acronym == query_token and (index + 1 - start_index) >= 2:
+            return index + 1
+    return None
+
+
+def _abbreviation_match_score(query_text: str, candidate_text: str) -> float:
+    query_tokens = _search_token_list(query_text)
+    candidate_tokens = _search_token_list(candidate_text)
+    if not query_tokens or len(candidate_tokens) < 2:
+        return 0.0
+
+    candidate_index = 0
+    used_abbreviation = False
+    for query_token in query_tokens:
+        if candidate_index >= len(candidate_tokens):
+            return 0.0
+        if query_token == candidate_tokens[candidate_index]:
+            candidate_index += 1
+            continue
+
+        matched_end = _match_query_token_to_candidate_group(query_token, candidate_tokens, candidate_index)
+        if matched_end is None:
+            return 0.0
+        candidate_index = matched_end
+        used_abbreviation = True
+
+    if not used_abbreviation:
+        return 0.0
+    if candidate_index == len(candidate_tokens):
+        return 0.995
+
+    coverage = candidate_index / len(candidate_tokens)
+    return min(0.98, 0.92 + (coverage * 0.06))
 
 
 def _text_match_score(query_text: str, candidate_text: str) -> float:
@@ -448,14 +503,24 @@ def _score_slug_search_candidate(
 
     title_score = _text_match_score(query, title or "")
     slug_score = _text_match_score(query, slug_text)
+    title_abbreviation_score = _abbreviation_match_score(query, title or "")
+    slug_abbreviation_score = _abbreviation_match_score(query, slug_text)
 
-    matched_by = "title"
-    best_score = title_score
-    if slug_score > best_score:
-        matched_by = "slug"
-        best_score = slug_score
-    elif title_score > 0 and slug_score == title_score:
-        matched_by = "title"
+    match_priority = {
+        "title": 3,
+        "title_abbr": 2,
+        "slug": 1,
+        "slug_abbr": 0,
+    }
+    matched_by, best_score = max(
+        (
+            ("title", title_score),
+            ("title_abbr", title_abbreviation_score),
+            ("slug", slug_score),
+            ("slug_abbr", slug_abbreviation_score),
+        ),
+        key=lambda item: (item[1], match_priority[item[0]]),
+    )
 
     if matched_by == "title" and title:
         best_score = min(0.999, best_score + 0.01)
@@ -711,18 +776,20 @@ def run_crawl_reviews(args: argparse.Namespace) -> int:
                 concurrency=args.concurrency,
             )
         logging.info(
-            "crawl-reviews %s processed=%d critic_reviews=%d user_reviews=%d failed=%d",
+            "crawl-reviews %s processed=%d games_crawled=%d critic_reviews=%d user_reviews=%d failed=%d",
             "stopped" if result.stopped else "finished",
             result.slugs_processed,
+            result.games_crawled,
             result.critic_reviews_saved,
             result.user_reviews_saved,
             len(result.failed_slugs),
         )
         if bool(getattr(args, "print_summary", False)):
             summary = (
-                "crawl-reviews summary: processed=%d critic_reviews=%d user_reviews=%d failed=%d"
+                "crawl-reviews summary: processed=%d games_crawled=%d critic_reviews=%d user_reviews=%d failed=%d"
                 % (
                     result.slugs_processed,
+                    result.games_crawled,
                     result.critic_reviews_saved,
                     result.user_reviews_saved,
                     len(result.failed_slugs),
@@ -896,22 +963,89 @@ def run_export_excel(args: argparse.Namespace) -> int:
     return 0
 
 
+def _download_covers_summary_text(
+    *,
+    total: int,
+    games_crawled: int,
+    downloaded: int,
+    skipped: int,
+    failed: int,
+    stopped: bool = False,
+) -> str:
+    summary = (
+        "download-covers summary: total=%d games_crawled=%d downloaded=%d skipped=%d failed=%d"
+        % (total, games_crawled, downloaded, skipped, failed)
+    )
+    if stopped:
+        summary = f"{summary} stopped=1"
+    return summary
+
+
 def run_download_covers(args: argparse.Namespace) -> int:
     stop_event = _get_stop_event(args)
+    requested_slug = str(getattr(args, "slug", None) or "").strip() or None
     storage = SQLiteStorage(args.db)
     try:
-        rows = storage.list_game_cover_urls(slug=getattr(args, "slug", None))
         with _build_client(args) as client:
+            scraper = MetacriticScraper(client, storage, stop_event=stop_event)
             downloader = CoverImageDownloader(
                 fetch_binary=client.fetch_binary,
                 output_dir=args.covers_dir,
                 overwrite=args.overwrite,
             )
+            rows = storage.list_game_cover_urls(slug=requested_slug)
+            games_crawled = 0
+            failed = 0
+
+            if requested_slug and not rows:
+                logging.warning(
+                    "games table has no cover row for slug=%s; crawling game before downloading covers",
+                    requested_slug,
+                )
+                crawl_result = scraper.crawl_slug(
+                    requested_slug,
+                    include_critic_reviews=False,
+                    include_user_reviews=False,
+                    review_page_size=50,
+                    max_review_pages=1,
+                )
+                games_crawled += crawl_result.games_crawled
+                failed += len(crawl_result.failed_slugs)
+                if crawl_result.stopped:
+                    total_rows = 1
+                    logging.info(
+                        "download-covers stopped total=%d games_crawled=%d downloaded=%d skipped=%d failed=%d covers_dir=%s",
+                        total_rows,
+                        games_crawled,
+                        0,
+                        0,
+                        failed,
+                        args.covers_dir,
+                    )
+                    if bool(getattr(args, "print_summary", False)):
+                        print(
+                            _download_covers_summary_text(
+                                total=total_rows,
+                                games_crawled=games_crawled,
+                                downloaded=0,
+                                skipped=0,
+                                failed=failed,
+                                stopped=True,
+                            )
+                        )
+                    return 130
+
+                rows = storage.list_game_cover_urls(slug=requested_slug)
+                if not rows and not crawl_result.failed_slugs:
+                    rows = [(requested_slug, None)]
+
+            total_rows = len(rows)
+            if requested_slug:
+                total_rows = max(1, total_rows)
             downloaded = 0
             skipped = 0
-            failed = 0
             try:
-                for slug, cover_url in rows:
+                for index, (slug, cover_url) in enumerate(rows, start=1):
                     _check_stop_requested(stop_event)
                     status = downloader.download(slug=slug, cover_url=cover_url)
                     if status == "downloaded":
@@ -920,25 +1054,55 @@ def run_download_covers(args: argparse.Namespace) -> int:
                         skipped += 1
                     else:
                         failed += 1
+                    logging.info(
+                        "cover download slug=%s status=%s cover_url=%s",
+                        slug,
+                        status,
+                        cover_url or "-",
+                        extra={"progress": f"[{index}/{total_rows}]"},
+                    )
             except InterruptedError:
                 logging.info(
-                    "download-covers stopped total=%d downloaded=%d skipped=%d failed=%d covers_dir=%s",
-                    len(rows),
+                    "download-covers stopped total=%d games_crawled=%d downloaded=%d skipped=%d failed=%d covers_dir=%s",
+                    total_rows,
+                    games_crawled,
                     downloaded,
                     skipped,
                     failed,
                     args.covers_dir,
                 )
+                if bool(getattr(args, "print_summary", False)):
+                    print(
+                        _download_covers_summary_text(
+                            total=total_rows,
+                            games_crawled=games_crawled,
+                            downloaded=downloaded,
+                            skipped=skipped,
+                            failed=failed,
+                            stopped=True,
+                        )
+                    )
                 return 130
 
         logging.info(
-            "download-covers finished total=%d downloaded=%d skipped=%d failed=%d covers_dir=%s",
-            len(rows),
+            "download-covers finished total=%d games_crawled=%d downloaded=%d skipped=%d failed=%d covers_dir=%s",
+            total_rows,
+            games_crawled,
             downloaded,
             skipped,
             failed,
             args.covers_dir,
         )
+        if bool(getattr(args, "print_summary", False)):
+            print(
+                _download_covers_summary_text(
+                    total=total_rows,
+                    games_crawled=games_crawled,
+                    downloaded=downloaded,
+                    skipped=skipped,
+                    failed=failed,
+                )
+            )
         return 0 if failed == 0 else 2
     finally:
         storage.close()
@@ -1208,6 +1372,7 @@ def _build_download_covers_namespace(
     settings: dict[str, object],
     *,
     slug: str | None = None,
+    print_summary: bool = False,
     stop_event: threading.Event | None = None,
 ) -> argparse.Namespace:
     return argparse.Namespace(
@@ -1220,6 +1385,7 @@ def _build_download_covers_namespace(
         max_retries=int(settings["max_retries"]),
         backoff=float(settings["backoff"]),
         delay=float(settings["delay"]),
+        print_summary=print_summary,
         stop_event=stop_event,
     )
 
@@ -1403,9 +1569,6 @@ def _style_output_line(line: str) -> list[tuple[str, str]]:
         fragments: list[tuple[str, str]] = []
         if bullet:
             fragments.append(("class:log.bullet", bullet))
-        if "download-covers finished" in message or "cover download" in message:
-            fragments.append(("class:log.cover", f"{header}{message}"))
-            return fragments
         if level == "WARNING":
             fragments.extend([("class:log.warning", header), ("", message)])
             return fragments
@@ -1817,7 +1980,10 @@ def _run_interactive_command(
                 return True
             slug = args[0]
             ns = _build_crawl_one_namespace(settings, slug=slug, print_summary=True, stop_event=stop_event)
-            _run_with_captured_stdout(run_crawl_one, ns, emit)
+            try:
+                _run_with_captured_stdout(run_crawl_one, ns, emit)
+            finally:
+                _refresh_status_if_needed()
             return True
 
         if cmd == "search-slug":
@@ -1834,7 +2000,10 @@ def _run_interactive_command(
                 return True
             slug = args[0] if args else None
             ns = _build_crawl_reviews_namespace(settings, slug=slug, print_summary=True, stop_event=stop_event)
-            _run_with_captured_stdout(run_crawl_reviews, ns, emit)
+            try:
+                _run_with_captured_stdout(run_crawl_reviews, ns, emit)
+            finally:
+                _refresh_status_if_needed()
             return True
 
         if cmd == "download-covers":
@@ -1842,8 +2011,11 @@ def _run_interactive_command(
                 emit("Usage: download-covers [slug]")
                 return True
             slug = args[0] if args else None
-            ns = _build_download_covers_namespace(settings, slug=slug, stop_event=stop_event)
-            _run_with_captured_stdout(run_download_covers, ns, emit)
+            ns = _build_download_covers_namespace(settings, slug=slug, print_summary=True, stop_event=stop_event)
+            try:
+                _run_with_captured_stdout(run_download_covers, ns, emit)
+            finally:
+                _refresh_status_if_needed()
             return True
 
         if cmd == "sync-slugs":
@@ -1940,7 +2112,6 @@ def run_interactive() -> int:
             "log.bullet": "ansibrightblack",
             "log.warning": "bold ansibrightyellow",
             "log.error": "bold ansibrightred",
-            "log.cover": "bold ansibrightcyan",
             "settings.key": "ansibrightblue",
             "settings.value": "bold ansiyellow",
             "settings.comment_prefix": "ansibrightblack",
