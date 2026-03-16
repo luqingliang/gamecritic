@@ -88,6 +88,13 @@ input {
   animation: rise-in 420ms ease-out;
 }
 
+.hero-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+
 .eyebrow,
 .section-kicker {
   margin: 0;
@@ -116,6 +123,38 @@ input {
   line-height: 1.7;
   max-width: 54ch;
   color: var(--muted);
+}
+
+.language-switch {
+  display: inline-flex;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(25, 22, 18, 0.06);
+  border: 1px solid rgba(25, 22, 18, 0.08);
+}
+
+.language-button {
+  border: 0;
+  cursor: pointer;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
+  font-size: 0.88rem;
+  line-height: 1;
+  transition: transform 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.language-button:hover {
+  transform: translateY(-1px);
+}
+
+.language-button.active {
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  box-shadow: 0 8px 18px rgba(25, 22, 18, 0.08);
 }
 
 .lookup-form,
@@ -655,12 +694,17 @@ input {
     padding: 18px;
   }
 
+  .hero-head,
   .lookup-row,
   .search-result-head,
   .title-row,
   .section-head,
   .review-head {
     flex-direction: column;
+  }
+
+  .language-switch {
+    align-self: flex-start;
   }
 
   .lookup-recent .section-head {

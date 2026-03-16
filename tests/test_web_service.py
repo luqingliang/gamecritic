@@ -636,6 +636,7 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(content_type, "text/html; charset=utf-8")
         self.assertIn("<title>Gamecritic</title>", text)
         self.assertIn('id="slug-form"', text)
+        self.assertIn('id="lang-switch"', text)
         self.assertIn('id="status-card"', text)
         self.assertIn('/static/app.js', text)
 
@@ -653,7 +654,7 @@ class WebServiceApiTestCase(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "text/html; charset=utf-8")
-        self.assertIn("REVIEW STREAM", body.decode("utf-8"))
+        self.assertIn('id="reviews-title"', body.decode("utf-8"))
 
     def test_frontend_static_asset_returns_javascript(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -672,6 +673,7 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(content_type, "application/javascript; charset=utf-8")
         self.assertIn("loadSlug", text)
         self.assertIn("RECENT_GAMES_KEY", text)
+        self.assertIn("LANGUAGE_KEY", text)
 
 
 if __name__ == "__main__":
