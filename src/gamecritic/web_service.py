@@ -11,7 +11,7 @@ from typing import Any, Callable, ContextManager
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .scraper import MetacriticScraper
-from .slug_search import SlugSearchMatch, search_slug_candidates
+from .slug_search import SEARCH_SLUG_SHORTLIST_LIMIT, SlugSearchMatch, search_slug_candidates
 from .storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
@@ -246,7 +246,11 @@ class GamecriticWebService:
         return game
 
     def _search_games(self, query: str) -> dict[str, Any]:
-        search_result = search_slug_candidates(self._storage.list_slug_search_candidates(), query, limit=None)
+        search_result = search_slug_candidates(
+            self._storage.list_slug_search_candidates(query=query, limit=SEARCH_SLUG_SHORTLIST_LIMIT),
+            query,
+            limit=None,
+        )
         return {
             "query": search_result.query,
             "status": search_result.status,

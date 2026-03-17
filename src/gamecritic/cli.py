@@ -25,15 +25,20 @@ from .config import (
 )
 from .cover_downloader import CoverImageDownloader
 from .scraper import MetacriticScraper
-from .slug_search import format_slug_search_match, search_slug_candidates
-from .storage import APP_TABLE_NAMES, SQLiteStorage, load_slug_search_candidates_from_db
+from .slug_search import SEARCH_SLUG_SHORTLIST_LIMIT, format_slug_search_match, search_slug_candidates
+from .storage import (
+    APP_TABLE_NAMES,
+    LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+    SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+    SQLiteStorage,
+    load_slug_search_candidates_from_db,
+)
 from .web_service import GamecriticWebService, WebServiceConfig
 
 DEFAULT_QUICKSTART_MAX_REVIEW_PAGES = 1
 DEFAULT_CONCURRENCY = 4
 DEFAULT_SLUG_SYNC_BATCH_SIZE = 500
-GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY = "game_slugs_last_successful_full_sync_at"
-GAME_SLUGS_FULL_SYNC_MAX_AGE = timedelta(days=7)
+SLUG_INDEX_FULL_SYNC_MAX_AGE = timedelta(days=7)
 SHARED_SETTINGS_PATH = "config/cli_settings.json"
 INTERACTIVE_WELCOME_CONTENT_WIDTH = 74
 INTERACTIVE_WELCOME_LABEL_WIDTH = 28
@@ -55,7 +60,7 @@ INTERACTIVE_HELP_TITLE_EN = "Interactive Help"
 INTERACTIVE_HELP_TITLE_ZH = "交互帮助"
 INTERACTIVE_HELP_SUBTITLE_EN = "Run commands directly at the gamecritic> prompt."
 INTERACTIVE_HELP_SUBTITLE_ZH = "在当前 gamecritic> 提示符里直接输入命令。"
-INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT = "games total=... | game_slugs total=... | last full sync=loading"
+INTERACTIVE_SLUG_INDEX_STATUS_LOADING_TEXT = "games total=... | indexed slugs total=... | last full sync=loading"
 INTERACTIVE_HELP_SECTIONS = (
     (
         "Core Workflow",
@@ -69,9 +74,9 @@ INTERACTIVE_HELP_SECTIONS = (
             ),
             ("crawl-one <slug>", "Crawl one game with current settings", "抓取单个游戏"),
             (
-                "crawl-reviews [slug]",
-                "Backfill both critic and user reviews for games in SQLite",
-                "为 SQLite 中已有游戏补抓媒体和用户评论",
+                "crawl-reviews <slug>",
+                "Backfill both critic and user reviews for one stored game",
+                "为单个已存储游戏补抓媒体和用户评论",
             ),
             ("sync-slugs", "Sync sitemap slugs into SQLite", "将 sitemap 中的 slug 同步到 SQLite"),
             (
@@ -117,7 +122,7 @@ INTERACTIVE_HELP_EXAMPLES_EN = (
     "crawl",
     "search-slug Elden Ring",
     "crawl-one the-legend-of-zelda-breath-of-the-wild",
-    "crawl-reviews",
+    "crawl-reviews the-legend-of-zelda-breath-of-the-wild",
     "show",
     "set concurrency 4",
     "sync-slugs",
@@ -129,7 +134,7 @@ INTERACTIVE_HELP_EXAMPLES_ZH = (
     "crawl",
     "search-slug Elden Ring",
     "crawl-one the-legend-of-zelda-breath-of-the-wild",
-    "crawl-reviews",
+    "crawl-reviews the-legend-of-zelda-breath-of-the-wild",
     "show-zh",
     "set concurrency 4",
     "sync-slugs",
@@ -226,11 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
         "crawl-reviews",
         help="Backfill critic and user reviews using the shared settings profile.",
     )
-    crawl_reviews.add_argument(
-        "slug",
-        nargs="?",
-        help="Game slug. When omitted, backfill reviews for all crawled games.",
-    )
+    crawl_reviews.add_argument("slug", help="Game slug.")
     subparsers.add_parser(
         "sync-slugs",
         help="Sync game slugs using the shared settings profile.",
@@ -331,17 +332,17 @@ def _parse_checkpoint_datetime(value: object) -> datetime | None:
     return parsed
 
 
-def _should_auto_sync_game_slugs_before_crawl(storage: SQLiteStorage) -> bool:
-    state_value = storage.get_state(GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY)
+def _should_auto_sync_slug_index_before_crawl(storage: SQLiteStorage) -> bool:
+    state_value = storage.get_state(SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY)
     if state_value is None:
-        logging.info("game_slugs checkpoint missing; running sync-slugs before crawl")
+        logging.info("slug index checkpoint missing; running sync-slugs before crawl")
         return True
 
     checkpoint = _parse_checkpoint_datetime(state_value)
     if checkpoint is None:
         if isinstance(state_value, str):
             logging.warning(
-                "game_slugs checkpoint is invalid state_value=%s; running sync-slugs before crawl",
+                "slug index checkpoint is invalid state_value=%s; running sync-slugs before crawl",
                 state_value,
             )
             return True
@@ -349,16 +350,16 @@ def _should_auto_sync_game_slugs_before_crawl(storage: SQLiteStorage) -> bool:
 
     now = datetime.now(timezone.utc)
     age = now - checkpoint
-    if age >= GAME_SLUGS_FULL_SYNC_MAX_AGE:
+    if age >= SLUG_INDEX_FULL_SYNC_MAX_AGE:
         logging.info(
-            "game_slugs checkpoint stale state_value=%s age_seconds=%d; running sync-slugs before crawl",
+            "slug index checkpoint stale state_value=%s age_seconds=%d; running sync-slugs before crawl",
             checkpoint.isoformat(),
             int(age.total_seconds()),
         )
         return True
 
     logging.info(
-        "game_slugs checkpoint fresh state_value=%s age_seconds=%d; skipping sync-slugs before crawl",
+        "slug index checkpoint fresh state_value=%s age_seconds=%d; skipping sync-slugs before crawl",
         checkpoint.isoformat(),
         max(0, int(age.total_seconds())),
     )
@@ -378,7 +379,7 @@ def _build_auto_sync_slugs_args(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def _maybe_run_auto_sync_slugs_before_crawl(args: argparse.Namespace, storage: SQLiteStorage) -> int | None:
-    if not _should_auto_sync_game_slugs_before_crawl(storage):
+    if not _should_auto_sync_slug_index_before_crawl(storage):
         return None
 
     logging.info("auto sync-slugs before crawl db=%s", args.db)
@@ -396,7 +397,7 @@ def run_search_slug(args: argparse.Namespace) -> int:
         raise SystemExit("search-slug requires a non-empty query")
 
     logging.info("search-slug querying local database")
-    candidates = load_slug_search_candidates_from_db(args.db)
+    candidates = load_slug_search_candidates_from_db(args.db, query=query, limit=SEARCH_SLUG_SHORTLIST_LIMIT)
 
     logging.info("search-slug matching candidates")
     search_result = search_slug_candidates(candidates, query, limit=None)
@@ -565,6 +566,9 @@ def run_crawl_one(args: argparse.Namespace) -> int:
 def run_crawl_reviews(args: argparse.Namespace) -> int:
     if args.concurrency < 1:
         raise SystemExit("--concurrency must be >= 1")
+    slug = str(getattr(args, "slug", "") or "").strip()
+    if not slug:
+        raise SystemExit("crawl-reviews requires a non-empty slug")
     stop_event = _get_stop_event(args)
     include_critic_reviews, include_user_reviews = _resolve_review_selection(
         args,
@@ -576,7 +580,7 @@ def run_crawl_reviews(args: argparse.Namespace) -> int:
         with _build_client(args) as client:
             scraper = MetacriticScraper(client, storage, stop_event=stop_event)
             result = scraper.crawl_reviews_from_games(
-                slug=getattr(args, "slug", None),
+                slug=slug,
                 include_critic_reviews=include_critic_reviews,
                 include_user_reviews=include_user_reviews,
                 review_page_size=args.review_page_size,
@@ -647,7 +651,7 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
         nonlocal current_saved_games, current_inserted_games, current_updated_games
         if not current_batch:
             return
-        one_processed, one_inserted, one_updated = storage.upsert_game_slugs(current_batch)
+        one_processed, one_inserted, one_updated = storage.upsert_indexed_slugs(current_batch)
         processed += one_processed
         inserted += one_inserted
         updated += one_updated
@@ -703,7 +707,7 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
             except InterruptedError:
                 _flush_current_batch()
                 _log_current_sitemap(stopped=True)
-                total = storage.count_rows("game_slugs")
+                total = storage.count_indexed_slugs()
                 logging.info(
                     "sync-slugs stopped processed=%d inserted=%d updated=%d total=%d db=%s",
                     processed,
@@ -726,12 +730,12 @@ def run_sync_slugs(args: argparse.Namespace) -> int:
             finally:
                 current_sitemap_url = None
 
-        total = storage.count_rows("game_slugs")
+        total = storage.count_indexed_slugs()
         state_value = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        storage.set_state(GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY, state_value)
+        storage.set_state(SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY, state_value)
         logging.info(
             "sync-slugs checkpoint state_key=%s state_value=%s",
-            GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
+            SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
             state_value,
         )
         logging.info(
@@ -987,12 +991,11 @@ def run_download_covers(args: argparse.Namespace) -> int:
 def _clear_db_summary_text(counts: dict[str, int]) -> str:
     total = sum(counts.values())
     return (
-        "clear-db summary: critic_reviews=%d user_reviews=%d games=%d game_slugs=%d sync_state=%d total=%d"
+        "clear-db summary: critic_reviews=%d user_reviews=%d games=%d sync_state=%d total=%d"
         % (
             counts.get("critic_reviews", 0),
             counts.get("user_reviews", 0),
             counts.get("games", 0),
-            counts.get("game_slugs", 0),
             counts.get("sync_state", 0),
             total,
         )
@@ -1193,7 +1196,7 @@ def _build_search_slug_namespace(
 def _build_crawl_reviews_namespace(
     settings: dict[str, object],
     *,
-    slug: str | None = None,
+    slug: str,
     print_summary: bool = False,
     stop_event: threading.Event | None = None,
 ) -> argparse.Namespace:
@@ -1566,7 +1569,7 @@ def _interactive_welcome_rows() -> list[tuple[str, str, str | None]]:
         ("item", "crawl", "Run a crawl with the current settings"),
         ("item", "search-slug <game_name>", "Resolve a game name to the best local slug match"),
         ("item", "crawl-one <slug>", "Fetch one game immediately"),
-        ("item", "crawl-reviews [slug]", "Backfill reviews for games already stored in SQLite"),
+        ("item", "crawl-reviews <slug>", "Backfill reviews for one stored game"),
         ("item", "serve", "Start the local HTTP API service"),
         ("item", "show", "Inspect the active configuration"),
         ("item", "stop", "Request stop for the current background task or web service"),
@@ -1661,7 +1664,7 @@ def _interactive_help_hint_text() -> str:
     return "Type 'help' or 'help-zh'"
 
 
-def _format_interactive_game_slugs_updated_at(value: object) -> str:
+def _format_interactive_slug_index_updated_at(value: object) -> str:
     if value is None:
         return "never"
 
@@ -1673,34 +1676,65 @@ def _format_interactive_game_slugs_updated_at(value: object) -> str:
     return normalized or "never"
 
 
-def _interactive_game_slugs_status_text(db_path: str) -> str:
+def _interactive_slug_index_status_text(db_path: str) -> str:
     normalized_db_path = str(db_path).strip()
     if not normalized_db_path or not os.path.exists(normalized_db_path):
-        return "games total=0 | game_slugs total=0 | last full sync=never"
+        return "games total=0 | indexed slugs total=0 | last full sync=never"
 
     try:
         conn = sqlite3.connect(normalized_db_path)
         try:
             try:
-                games_row = conn.execute("SELECT COUNT(*) FROM games").fetchone()
+                games_row = conn.execute("SELECT COUNT(*) FROM games WHERE is_crawled = 1").fetchone()
             except sqlite3.Error as exc:
                 if "no such table" in str(exc).lower():
                     games_row = (0,)
+                elif "no such column" in str(exc).lower():
+                    games_row = conn.execute("SELECT COUNT(*) FROM games").fetchone()
                 else:
                     raise
 
             try:
-                total_row = conn.execute("SELECT COUNT(*) FROM game_slugs").fetchone()
+                total_row = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM games
+                    WHERE sitemap_url IS NOT NULL AND TRIM(sitemap_url) != ''
+                    """
+                ).fetchone()
             except sqlite3.Error as exc:
                 if "no such table" in str(exc).lower():
                     total_row = (0,)
+                elif "no such column" in str(exc).lower():
+                    try:
+                        total_row = (0,)
+                    except sqlite3.Error as nested_exc:
+                        if "no such table" in str(nested_exc).lower():
+                            total_row = (0,)
+                        else:
+                            raise
                 else:
                     raise
 
             try:
                 state_row = conn.execute(
-                    "SELECT state_value FROM sync_state WHERE state_key = ?",
-                    (GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,),
+                    """
+                    SELECT state_value
+                    FROM sync_state
+                    WHERE state_key IN (?, ?)
+                    ORDER BY CASE state_key
+                        WHEN ? THEN 0
+                        WHEN ? THEN 1
+                        ELSE 2
+                    END
+                    LIMIT 1
+                    """,
+                    (
+                        SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+                        LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+                        SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+                        LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+                    ),
                 ).fetchone()
             except sqlite3.Error as exc:
                 if "no such table" in str(exc).lower():
@@ -1711,20 +1745,20 @@ def _interactive_game_slugs_status_text(db_path: str) -> str:
             conn.close()
     except sqlite3.Error as exc:
         if "no such table" in str(exc).lower():
-            return "games total=0 | game_slugs total=0 | last full sync=never"
-        return "games total=unavailable | game_slugs total=unavailable | last full sync=unavailable"
+            return "games total=0 | indexed slugs total=0 | last full sync=never"
+        return "games total=unavailable | indexed slugs total=unavailable | last full sync=unavailable"
 
     games_total = int((games_row or (0,))[0] or 0)
     total = int((total_row or (0,))[0] or 0)
-    last_updated = _format_interactive_game_slugs_updated_at(state_row[0] if state_row else None)
-    return f"games total={games_total} | game_slugs total={total} | last full sync={last_updated}"
+    last_updated = _format_interactive_slug_index_updated_at(state_row[0] if state_row else None)
+    return f"games total={games_total} | indexed slugs total={total} | last full sync={last_updated}"
 
 
-def _schedule_interactive_game_slugs_status_refresh(
-    refresh_game_slugs_status: Callable[[], None],
+def _schedule_interactive_slug_index_status_refresh(
+    refresh_slug_index_status: Callable[[], None],
 ) -> threading.Thread:
     worker = threading.Thread(
-        target=refresh_game_slugs_status,
+        target=refresh_slug_index_status,
         name="interactive-status-refresh",
         daemon=True,
     )
@@ -1799,12 +1833,12 @@ def _run_interactive_command(
     emit: Callable[[str], None],
     *,
     request_stop: Callable[[], str] | None = None,
-    refresh_game_slugs_status: Callable[[], None] | None = None,
+    refresh_slug_index_status: Callable[[], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> bool:
     def _refresh_status_if_needed() -> None:
-        if refresh_game_slugs_status is not None:
-            refresh_game_slugs_status()
+        if refresh_slug_index_status is not None:
+            refresh_slug_index_status()
 
     cmd = tokens[0].lower()
     args = tokens[1:]
@@ -1912,10 +1946,10 @@ def _run_interactive_command(
             return True
 
         if cmd == "crawl-reviews":
-            if len(args) > 1:
-                emit("Usage: crawl-reviews [slug]")
+            if len(args) != 1:
+                emit("Usage: crawl-reviews <slug>")
                 return True
-            slug = args[0] if args else None
+            slug = args[0]
             ns = _build_crawl_reviews_namespace(settings, slug=slug, print_summary=True, stop_event=stop_event)
             try:
                 _run_with_captured_stdout(run_crawl_reviews, ns, emit)
@@ -2060,7 +2094,7 @@ def run_interactive() -> int:
     previous_no_cpr = os.environ.get("PROMPT_TOOLKIT_NO_CPR")
     os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
 
-    status_state = {"text": INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT}
+    status_state = {"text": INTERACTIVE_SLUG_INDEX_STATUS_LOADING_TEXT}
 
     class _InteractivePromptSession(PromptSession):
         def _create_layout(self):
@@ -2087,8 +2121,8 @@ def run_interactive() -> int:
 
     kb = KeyBindings()
 
-    def _refresh_interactive_game_slugs_status() -> None:
-        status_state["text"] = _interactive_game_slugs_status_text(str(settings["db"]))
+    def _refresh_interactive_slug_index_status() -> None:
+        status_state["text"] = _interactive_slug_index_status_text(str(settings["db"]))
         app = getattr(session, "app", None)
         invalidate = getattr(app, "invalidate", None)
         if callable(invalidate):
@@ -2127,7 +2161,7 @@ def run_interactive() -> int:
                     tokens,
                     settings,
                     emit_output,
-                    refresh_game_slugs_status=_refresh_interactive_game_slugs_status,
+                    refresh_slug_index_status=_refresh_interactive_slug_index_status,
                     stop_event=stop_event,
                 )
             finally:
@@ -2183,7 +2217,7 @@ def run_interactive() -> int:
             FormattedText(_interactive_welcome_fragments()),
             style=output_style,
         )
-    _schedule_interactive_game_slugs_status_refresh(_refresh_interactive_game_slugs_status)
+    _schedule_interactive_slug_index_status_refresh(_refresh_interactive_slug_index_status)
 
     try:
         with patch_stdout():
@@ -2223,7 +2257,7 @@ def run_interactive() -> int:
                     settings,
                     emit_output,
                     request_stop=_request_stop_current_command,
-                    refresh_game_slugs_status=_refresh_interactive_game_slugs_status,
+                    refresh_slug_index_status=_refresh_interactive_slug_index_status,
                 ):
                     return 0
     finally:

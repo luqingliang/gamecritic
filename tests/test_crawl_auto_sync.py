@@ -5,9 +5,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gamecritic.cli import (
+    SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
     _build_crawl_namespace,
     _interactive_defaults,
-    GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
     run_crawl,
 )
 from gamecritic.scraper import CrawlResult
@@ -24,7 +24,7 @@ class CrawlAutoSyncTestCase(unittest.TestCase):
         storage = SQLiteStorage(db_path)
         try:
             if checkpoint is not None:
-                storage.set_state(GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY, checkpoint)
+                storage.set_state(SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY, checkpoint)
         finally:
             storage.close()
 

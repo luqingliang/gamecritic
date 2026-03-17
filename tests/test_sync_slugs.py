@@ -5,13 +5,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gamecritic.cli import (
+    SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
     _build_sync_slugs_namespace,
     _interactive_defaults,
-    GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
     run_sync_slugs,
 )
 from gamecritic.client import GameSlugRecord
-from gamecritic.storage import SQLiteStorage
+from gamecritic.storage import (
+    LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+    SQLiteStorage,
+)
 
 
 class _FakeSlugClient:
@@ -36,12 +39,12 @@ class _FakeSlugClient:
 
 
 class SyncSlugsStorageTestCase(unittest.TestCase):
-    def test_upsert_game_slugs_tracks_inserted_and_updated_counts(self) -> None:
+    def test_upsert_indexed_slugs_tracks_inserted_and_updated_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                processed, inserted, updated = storage.upsert_game_slugs(
+                processed, inserted, updated = storage.upsert_indexed_slugs(
                     [
                         (
                             "alpha",
@@ -57,7 +60,7 @@ class SyncSlugsStorageTestCase(unittest.TestCase):
                 )
                 self.assertEqual((processed, inserted, updated), (2, 2, 0))
 
-                processed, inserted, updated = storage.upsert_game_slugs(
+                processed, inserted, updated = storage.upsert_indexed_slugs(
                     [
                         (
                             "alpha",
@@ -72,18 +75,42 @@ class SyncSlugsStorageTestCase(unittest.TestCase):
                     ]
                 )
                 self.assertEqual((processed, inserted, updated), (2, 1, 1))
-                self.assertEqual(storage.count_rows("game_slugs"), 3)
+                self.assertEqual(storage.count_rows("games"), 3)
 
                 row = storage.conn.execute(
-                    "SELECT game_url, sitemap_url, discovered_at, last_seen_at FROM game_slugs WHERE slug = ?",
+                    """
+                    SELECT game_url, sitemap_url, discovered_at, last_seen_at, is_crawled
+                    FROM games
+                    WHERE slug = ?
+                    """,
                     ("alpha",),
                 ).fetchone()
                 self.assertEqual(row[0], "https://www.metacritic.com/game/alpha-remastered/")
                 self.assertEqual(row[1], "https://www.metacritic.com/sitemap-remastered.xml")
                 self.assertIsNotNone(row[2])
                 self.assertIsNotNone(row[3])
+                self.assertEqual(row[4], 0)
             finally:
                 storage.close()
+
+    def test_storage_migrates_legacy_slug_index_sync_state_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.set_state(LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY, "2026-03-17T10:00:00+00:00")
+            finally:
+                storage.close()
+
+            migrated = SQLiteStorage(db_path)
+            try:
+                self.assertEqual(
+                    migrated.get_state(SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY),
+                    "2026-03-17T10:00:00+00:00",
+                )
+                self.assertIsNone(migrated.get_state(LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY))
+            finally:
+                migrated.close()
 
 
 class SyncSlugsCommandTestCase(unittest.TestCase):
@@ -115,7 +142,7 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
             storage = SQLiteStorage(db_path)
             try:
                 rows = storage.conn.execute(
-                    "SELECT slug, game_url, sitemap_url FROM game_slugs ORDER BY slug ASC"
+                    "SELECT slug, game_url, sitemap_url FROM games ORDER BY slug ASC"
                 ).fetchall()
                 self.assertEqual(
                     rows,
@@ -190,7 +217,7 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
 
             storage = SQLiteStorage(db_path)
             try:
-                state_value = storage.get_state(GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY)
+                state_value = storage.get_state(SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY)
                 self.assertIsNotNone(state_value)
                 parsed = datetime.fromisoformat(str(state_value))
                 self.assertIsNotNone(parsed.tzinfo)
@@ -237,7 +264,7 @@ class SyncSlugsCommandTestCase(unittest.TestCase):
 
             storage = SQLiteStorage(db_path)
             try:
-                self.assertEqual(storage.count_rows("game_slugs"), 2)
+                self.assertEqual(storage.count_rows("games"), 2)
             finally:
                 storage.close()
 
