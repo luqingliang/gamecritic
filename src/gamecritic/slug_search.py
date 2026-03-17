@@ -187,7 +187,7 @@ def find_slug_search_matches(
     candidates: Sequence[tuple[str, str | None]],
     query: str,
     *,
-    limit: int = SEARCH_SLUG_MAX_CANDIDATES,
+    limit: int | None = SEARCH_SLUG_MAX_CANDIDATES,
 ) -> tuple[list[SlugSearchMatch], int]:
     matches: list[SlugSearchMatch] = []
     for slug, title in candidates:
@@ -204,6 +204,8 @@ def find_slug_search_matches(
         )
     )
     total_matches = len(matches)
+    if limit is None:
+        return matches, total_matches
     return matches[:max(1, limit)], total_matches
 
 
@@ -233,7 +235,7 @@ def search_slug_candidates(
     candidates: Sequence[tuple[str, str | None]],
     query: str,
     *,
-    limit: int = SEARCH_SLUG_MAX_CANDIDATES,
+    limit: int | None = SEARCH_SLUG_MAX_CANDIDATES,
 ) -> SlugSearchResult:
     normalized_query = str(query or "").strip()
     if not normalized_query:

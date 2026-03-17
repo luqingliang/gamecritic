@@ -1467,6 +1467,37 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertTrue(any(line.startswith("resident-evil-4  # ") for line in printed_lines[1:]))
         self.assertTrue(any(line.startswith("resident-evil-village  # ") for line in printed_lines[1:]))
 
+    def test_run_search_slug_prints_all_ambiguous_matches_above_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                for index in range(6):
+                    storage.upsert_game(
+                        slug=f"elden-ring-variant-{index}",
+                        product_payload={
+                            "data": {"item": {"id": index + 1, "title": "Elden Ring", "platform": "PC"}}
+                        },
+                        critic_summary_payload=None,
+                        user_summary_payload=None,
+                        cover_url=None,
+                    )
+            finally:
+                storage.close()
+
+            settings = _interactive_defaults()
+            settings["db"] = str(db_path)
+            args = _build_search_slug_namespace(settings, query="Elden Ring")
+
+            with patch("builtins.print") as print_mock:
+                exit_code = run_search_slug(args)
+
+        self.assertEqual(exit_code, 2)
+        printed_lines = [call.args[0] for call in print_mock.call_args_list]
+        self.assertEqual(printed_lines[0], "Multiple possible slugs matched query: Elden Ring")
+        self.assertEqual(len(printed_lines[1:]), 6)
+        self.assertTrue(all(line.startswith("elden-ring-variant-") for line in printed_lines[1:]))
+
     def test_run_search_slug_does_not_auto_select_same_title_duplicates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
