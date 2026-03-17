@@ -400,6 +400,39 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertGreaterEqual(payload["data"]["total_matches"], 2)
         self.assertGreaterEqual(len(payload["data"]["matches"]), 2)
 
+    def test_search_endpoint_returns_all_matches_above_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                for index in range(6):
+                    storage.upsert_game(
+                        slug=f"elden-ring-variant-{index}",
+                        product_payload={
+                            "data": {"item": {"id": index + 1, "title": "Elden Ring", "platform": "PC"}}
+                        },
+                        critic_summary_payload=None,
+                        user_summary_payload=None,
+                        cover_url=None,
+                    )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/search?q=Elden%20Ring")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["status"], "ambiguous")
+        self.assertEqual(payload["data"]["total_matches"], 6)
+        self.assertEqual(len(payload["data"]["matches"]), 6)
+
     def test_search_endpoint_requires_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"

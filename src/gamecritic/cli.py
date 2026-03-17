@@ -399,7 +399,7 @@ def run_search_slug(args: argparse.Namespace) -> int:
     candidates = load_slug_search_candidates_from_db(args.db)
 
     logging.info("search-slug matching candidates")
-    search_result = search_slug_candidates(candidates, query)
+    search_result = search_slug_candidates(candidates, query, limit=None)
 
     logging.info("search-slug selecting result")
     selected = search_result.selected

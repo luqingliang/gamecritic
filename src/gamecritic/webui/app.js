@@ -21,6 +21,7 @@ const COPY = {
         ? `共 ${total} 个候选，当前展示前 ${shown} 个`
         : `共 ${shown} 个候选`
     ),
+    searchLoadingTitle: "正在加载游戏信息",
     emptyTitle: "从一个游戏名开始",
     emptyCopy: "输入游戏名，系统会先从本地索引匹配最接近的游戏，再获取基础信息和评论数据。",
     noCover: "暂无封面",
@@ -82,6 +83,7 @@ const COPY = {
         ? `${shown} of ${total} matches shown`
         : `${shown} match${shown === 1 ? "" : "es"}`
     ),
+    searchLoadingTitle: "Loading game details",
     emptyTitle: "Start with a game title",
     emptyCopy: "Enter a game title to match against the local index, then load the game profile and reviews.",
     noCover: "NO COVER",
@@ -338,12 +340,81 @@ function resetSearchState() {
   state.search = { query: "", matches: [], total_matches: 0, selected: null, status: "idle" };
 }
 
+function releaseDateTimestamp(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized === "-") {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const timestamp = Date.parse(normalized);
+  return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+}
+
+function compareSearchMatches(left, right) {
+  const leftScore = Number(left && left.score) || 0;
+  const rightScore = Number(right && right.score) || 0;
+  if (rightScore !== leftScore) {
+    return rightScore - leftScore;
+  }
+
+  const leftRelease = releaseDateTimestamp(left && left.release_date);
+  const rightRelease = releaseDateTimestamp(right && right.release_date);
+  if (rightRelease !== leftRelease) {
+    return rightRelease - leftRelease;
+  }
+
+  const leftTitle = String((left && left.title) || "");
+  const rightTitle = String((right && right.title) || "");
+  if (leftTitle !== rightTitle) {
+    return leftTitle.localeCompare(rightTitle);
+  }
+
+  return String((left && left.slug) || "").localeCompare(String((right && right.slug) || ""));
+}
+
+let searchResultsLayoutFrame = 0;
+
+function layoutSearchResultsMasonry() {
+  if (!elements.searchResults) {
+    return;
+  }
+
+  const gridStyles = window.getComputedStyle(elements.searchResults);
+  const autoRows = Number.parseFloat(gridStyles.getPropertyValue("grid-auto-rows"));
+  const rowGap = Number.parseFloat(gridStyles.getPropertyValue("row-gap"));
+  if (!Number.isFinite(autoRows) || autoRows <= 0 || !Number.isFinite(rowGap)) {
+    return;
+  }
+
+  elements.searchResults.querySelectorAll(".search-result-card").forEach((card) => {
+    card.style.gridRowEnd = "span 1";
+  });
+
+  elements.searchResults.querySelectorAll(".search-result-card").forEach((card) => {
+    const cardHeight = card.getBoundingClientRect().height;
+    const span = Math.max(1, Math.ceil((cardHeight + rowGap) / (autoRows + rowGap)));
+    card.style.gridRowEnd = `span ${span}`;
+  });
+}
+
+function scheduleSearchResultsLayout() {
+  if (searchResultsLayoutFrame) {
+    window.cancelAnimationFrame(searchResultsLayoutFrame);
+  }
+  searchResultsLayoutFrame = window.requestAnimationFrame(() => {
+    searchResultsLayoutFrame = 0;
+    layoutSearchResultsMasonry();
+  });
+}
+
 function renderSearchResults() {
-  const matches = Array.isArray(state.search.matches) ? state.search.matches : [];
+  const matches = Array.isArray(state.search.matches)
+    ? [...state.search.matches].sort(compareSearchMatches)
+    : [];
   if (!matches.length) {
     elements.searchPanel.classList.add("hidden");
     elements.searchMeta.textContent = "";
     elements.searchResults.innerHTML = "";
+    scheduleSearchResultsLayout();
     return;
   }
 
@@ -351,13 +422,108 @@ function renderSearchResults() {
   elements.searchPanel.classList.remove("hidden");
   elements.searchMeta.textContent = t("searchMeta", { shown: matches.length, total: totalMatches });
   elements.searchResults.innerHTML = matches.map((match) => {
-    const title = match.title || match.slug || t("unnamedGame");
+    const title = match.title || t("searchLoadingTitle");
+    const releaseDate = match.release_date || "-";
+    const cover = match.cover_url
+      ? `<img class="search-result-cover-image" src="${escapeHtml(match.cover_url)}" alt="${escapeHtml(title)}">`
+      : `<div class="search-result-cover-placeholder">${escapeHtml(t("noCover"))}</div>`;
     return `
       <button class="search-result-card" type="button" data-slug="${escapeHtml(match.slug || "")}">
-        <h3 class="search-result-title">${escapeHtml(title)}</h3>
+        <div class="search-result-cover">
+          ${cover}
+        </div>
+        <div class="search-result-body">
+          <h3 class="search-result-title">${escapeHtml(title)}</h3>
+          <div class="search-result-facts">
+            <div class="search-result-fact">
+              <span class="search-result-fact-label">${escapeHtml(t("labelRelease"))}</span>
+              <span class="search-result-fact-value">${escapeHtml(releaseDate)}</span>
+            </div>
+          </div>
+        </div>
       </button>
     `;
   }).join("");
+
+  elements.searchResults.querySelectorAll(".search-result-cover-image").forEach((image) => {
+    if (image.complete) {
+      return;
+    }
+    image.addEventListener("load", scheduleSearchResultsLayout, { once: true });
+    image.addEventListener("error", scheduleSearchResultsLayout, { once: true });
+  });
+  scheduleSearchResultsLayout();
+}
+
+function mergeSearchMatchDetails(slug, game) {
+  const normalizedSlug = normalizeSlug(slug);
+  if (!normalizedSlug || !Array.isArray(state.search.matches) || state.search.matches.length === 0) {
+    return false;
+  }
+
+  let updated = false;
+  state.search.matches = state.search.matches.map((match) => {
+    if (normalizeSlug(match.slug) !== normalizedSlug) {
+      return match;
+    }
+    updated = true;
+    return {
+      ...match,
+      title: game.title || match.title || null,
+      platform: game.platform || match.platform || null,
+      release_date: game.release_date || match.release_date || null,
+      cover_url: game.cover_url || match.cover_url || null,
+    };
+  });
+  return updated;
+}
+
+function removeSearchMatch(slug) {
+  const normalizedSlug = normalizeSlug(slug);
+  if (!normalizedSlug || !Array.isArray(state.search.matches) || state.search.matches.length === 0) {
+    return false;
+  }
+
+  const nextMatches = state.search.matches.filter((match) => normalizeSlug(match.slug) !== normalizedSlug);
+  if (nextMatches.length === state.search.matches.length) {
+    return false;
+  }
+
+  state.search.matches = nextMatches;
+  state.search.total_matches = Math.max(0, nextMatches.length);
+  if (state.search.selected && normalizeSlug(state.search.selected.slug) === normalizedSlug) {
+    state.search.selected = null;
+  }
+  return true;
+}
+
+async function hydrateSearchResults(requestId) {
+  const matches = Array.isArray(state.search.matches) ? [...state.search.matches] : [];
+  for (const match of matches) {
+    const slug = normalizeSlug(match.slug);
+    if (!slug) {
+      continue;
+    }
+    try {
+      const game = await fetchJson(`/api/game?slug=${encodeURIComponent(slug)}`);
+      if (requestId !== state.requestId) {
+        return;
+      }
+      if (mergeSearchMatchDetails(slug, game)) {
+        renderSearchResults();
+      }
+    } catch {
+      if (requestId !== state.requestId) {
+        return;
+      }
+      if (removeSearchMatch(slug)) {
+        renderSearchResults();
+        if (!state.search.matches.length) {
+          showError("errorNoMatch", { query: state.search.query || elements.input.value || "" });
+        }
+      }
+    }
+  }
 }
 
 function clearStatus() {
@@ -625,6 +791,7 @@ async function searchGames(query) {
     }
 
     clearStatus();
+    void hydrateSearchResults(requestId);
   } catch (error) {
     if (requestId !== state.requestId) {
       return;
@@ -744,6 +911,8 @@ elements.langZh.addEventListener("click", () => {
 elements.langEn.addEventListener("click", () => {
   setLocale("en");
 });
+
+window.addEventListener("resize", scheduleSearchResultsLayout);
 
 elements.recentList.addEventListener("click", (event) => {
   const target = event.target;

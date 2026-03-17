@@ -246,7 +246,7 @@ class GamecriticWebService:
         return game
 
     def _search_games(self, query: str) -> dict[str, Any]:
-        search_result = search_slug_candidates(self._storage.list_slug_search_candidates(), query)
+        search_result = search_slug_candidates(self._storage.list_slug_search_candidates(), query, limit=None)
         return {
             "query": search_result.query,
             "status": search_result.status,
