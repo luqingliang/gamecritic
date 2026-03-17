@@ -10,7 +10,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
-## [0.2.1] - 2026-03-16
+## [0.2.2] - 2026-03-17
 
 ### Added
 - New `serve` command for starting a local HTTP API service backed by the shared CLI settings.
@@ -30,6 +30,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - `/api/game` no longer piggybacks review crawling, and `/api/reviews` now surfaces upstream review crawl failures instead of returning silent empty data.
 - Web service initialization no longer opens SQLite storage before a failed socket bind.
 - Frontend error fallback messages now respect the active UI language.
+
+### Changed
+- Interactive CLI startup now defers database status counting and lazily imports the Excel exporter for faster launch.
+- Web search and `search-slug` now return all matches scoring `>= 0.95` instead of truncating to five candidates.
+- The web frontend now includes bilingual copy switching, richer search-result cards, and tighter mobile responsive behavior.
+
+### Fixed
+- Interactive `stop` now shuts down the web service and propagates cancellation to in-flight web-triggered crawl work.
+- `/api/game` no longer inherits review crawl toggles, and `/api/reviews` now returns explicit failures when review crawling fails.
+- Web service startup no longer leaks storage handles when port binding fails.
+- Frontend fallback error copy now respects the active UI language, and empty hydrated result sets surface a visible "no results" state.
 
 ## [0.2.0] - 2026-03-16
 
