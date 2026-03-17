@@ -17,6 +17,19 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - New `search` web API for resolving game-name queries to local slug matches and candidate lists.
 - HTTP endpoints for fetching one game's stored data and for backfilling + returning one game's review payloads.
 - A user-facing frontend served from `gamecritic serve`, including game-name search, a lookup homepage, and `/game/<slug>` detail view.
+- Built-in zh/en language switching for the web UI.
+
+### Changed
+- `search-slug` and the web search API now share one slug-match scoring implementation with a stricter acceptance threshold.
+- Interactive mode now supports running and stopping the `serve` command directly.
+- Interactive CLI startup now defers slug/game status counting and lazy-loads the Excel exporter for faster prompt startup.
+- The web UI search/detail flow, recent visits, and review presentation were refined for a cleaner user-facing experience.
+
+### Fixed
+- Stop requests now propagate through the web service so in-flight crawl-backed API requests can be interrupted cleanly.
+- `/api/game` no longer piggybacks review crawling, and `/api/reviews` now surfaces upstream review crawl failures instead of returning silent empty data.
+- Web service initialization no longer opens SQLite storage before a failed socket bind.
+- Frontend error fallback messages now respect the active UI language.
 
 ### Changed
 - Interactive CLI startup now defers database status counting and lazily imports the Excel exporter for faster launch.
@@ -168,7 +181,8 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/luqingliang/gamecritic/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/luqingliang/gamecritic/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/luqingliang/gamecritic/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/luqingliang/gamecritic/compare/v0.1.7...v0.1.8
