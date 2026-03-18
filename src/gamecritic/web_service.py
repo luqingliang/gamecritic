@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -16,6 +17,7 @@ from .storage import SQLiteStorage
 
 logger = logging.getLogger(__name__)
 WEBUI_DIR = Path(__file__).with_name("webui")
+GAME_REFRESH_MAX_AGE = timedelta(days=30)
 STATIC_FILE_ROUTES = {
     "/static/app.css": ("app.css", "text/css; charset=utf-8"),
     "/static/app.js": ("app.js", "application/javascript; charset=utf-8"),
@@ -37,6 +39,19 @@ class WebServiceConfig:
     include_user_reviews: bool
     review_page_size: int
     max_review_pages: int | None
+
+
+def _parse_cached_timestamp(value: object) -> datetime | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _write_json_response(handler: BaseHTTPRequestHandler, *, status: int, payload: dict[str, Any]) -> None:
@@ -221,10 +236,35 @@ class GamecriticWebService:
 
     def _get_or_crawl_game(self, slug: str) -> dict[str, Any]:
         game = self._storage.get_game(slug)
-        if game is not None:
+        if game is not None and not self._game_needs_refresh(game):
             game["auto_crawled"] = False
             return game
 
+        if game is not None:
+            logger.info("cached game stale slug=%s scraped_at=%s; refreshing before response", slug, game.get("scraped_at"))
+
+        try:
+            return self._crawl_game(slug)
+        except WebServiceError as exc:
+            if game is not None and exc.status_code != HTTPStatus.SERVICE_UNAVAILABLE:
+                logger.warning(
+                    "stale game refresh failed slug=%s status=%d; serving cached game: %s",
+                    slug,
+                    exc.status_code,
+                    exc.message,
+                )
+                game["auto_crawled"] = False
+                return game
+            raise
+
+    @staticmethod
+    def _game_needs_refresh(game: dict[str, Any]) -> bool:
+        scraped_at = _parse_cached_timestamp(game.get("scraped_at"))
+        if scraped_at is None:
+            return True
+        return (datetime.now(timezone.utc) - scraped_at) > GAME_REFRESH_MAX_AGE
+
+    def _crawl_game(self, slug: str) -> dict[str, Any]:
         with self._client_factory() as client:
             scraper = MetacriticScraper(client, self._storage, stop_event=self._stop_event)
             result = scraper.crawl_slug(
@@ -259,7 +299,100 @@ class GamecriticWebService:
             "matches": [self._serialize_search_match(match) for match in search_result.matches],
         }
 
+    def _build_reviews_response(
+        self,
+        *,
+        slug: str,
+        critic_reviews: list[dict[str, Any]],
+        user_reviews: list[dict[str, Any]],
+        game_auto_crawled: bool,
+    ) -> dict[str, Any]:
+        return {
+            "slug": slug,
+            "game_auto_crawled": game_auto_crawled,
+            "critic_reviews": critic_reviews,
+            "user_reviews": user_reviews,
+            "counts": {
+                "critic_reviews": len(critic_reviews),
+                "user_reviews": len(user_reviews),
+            },
+        }
+
+    @staticmethod
+    def _review_count_is_zero(game: dict[str, Any] | None, *, review_type: str) -> bool:
+        if game is None:
+            return False
+
+        count_key = f"{review_type}_review_count"
+        if game.get(count_key) == 0:
+            return True
+
+        summary = game.get(f"{review_type}_summary")
+        if not isinstance(summary, dict):
+            return False
+
+        item = summary.get("data", {}).get("item", {})
+        if not isinstance(item, dict):
+            return False
+
+        count = item.get("reviewCount")
+        if count is None:
+            count = item.get("ratingsCount")
+        if count is None:
+            count = item.get("ratingCount")
+        return count == 0
+
+    @staticmethod
+    def _cached_timestamp_is_stale(value: object) -> bool:
+        scraped_at = _parse_cached_timestamp(value)
+        if scraped_at is None:
+            return True
+        return (datetime.now(timezone.utc) - scraped_at) > GAME_REFRESH_MAX_AGE
+
+    def _get_cached_reviews(self, slug: str) -> tuple[dict[str, Any] | None, bool]:
+        critic_reviews = self._storage.list_critic_review_payloads(slug)
+        user_reviews = self._storage.list_user_review_payloads(slug)
+        game = self._storage.get_game(slug)
+
+        critic_ready = bool(critic_reviews)
+        user_ready = bool(user_reviews)
+        critic_stale = False
+        user_stale = False
+
+        if critic_reviews:
+            critic_stale = self._cached_timestamp_is_stale(self._storage.get_latest_critic_review_scraped_at(slug))
+        if user_reviews:
+            user_stale = self._cached_timestamp_is_stale(self._storage.get_latest_user_review_scraped_at(slug))
+
+        if game is not None:
+            if self._review_count_is_zero(game, review_type="critic"):
+                critic_ready = True
+                if not critic_reviews:
+                    critic_stale = self._game_needs_refresh(game)
+            if self._review_count_is_zero(game, review_type="user"):
+                user_ready = True
+                if not user_reviews:
+                    user_stale = self._game_needs_refresh(game)
+
+        if critic_ready and user_ready:
+            return (
+                self._build_reviews_response(
+                    slug=slug,
+                    critic_reviews=critic_reviews,
+                    user_reviews=user_reviews,
+                    game_auto_crawled=False,
+                ),
+                critic_stale or user_stale,
+            )
+        return None, False
+
     def _get_or_crawl_reviews(self, slug: str) -> dict[str, Any]:
+        cached_reviews, needs_refresh = self._get_cached_reviews(slug)
+        if cached_reviews is not None and not needs_refresh:
+            return cached_reviews
+        if cached_reviews is not None:
+            logger.info("cached reviews stale slug=%s; refreshing before response", slug)
+
         with self._client_factory() as client:
             scraper = MetacriticScraper(client, self._storage, stop_event=self._stop_event)
             result = scraper.crawl_reviews_from_games(
@@ -276,25 +409,32 @@ class GamecriticWebService:
 
         failed_review_types = sorted({review_type for failed_slug, review_type in result.review_failures if failed_slug == slug})
         if failed_review_types:
+            if cached_reviews is not None:
+                failed_types_text = ", ".join(failed_review_types)
+                logger.warning(
+                    "stale review refresh failed slug=%s failed_types=%s; serving cached reviews",
+                    slug,
+                    failed_types_text,
+                )
+                return cached_reviews
             failed_types_text = ", ".join(failed_review_types)
             raise WebServiceError(HTTPStatus.BAD_GATEWAY, f"failed to crawl {failed_types_text} reviews for slug={slug}")
 
         game = self._storage.get_game(slug)
         if game is None and result.failed_slugs:
+            if cached_reviews is not None:
+                logger.warning("stale review refresh failed slug=%s; serving cached reviews", slug)
+                return cached_reviews
             raise WebServiceError(HTTPStatus.BAD_GATEWAY, f"failed to crawl reviews for slug={slug}")
 
         critic_reviews = self._storage.list_critic_review_payloads(slug)
         user_reviews = self._storage.list_user_review_payloads(slug)
-        return {
-            "slug": slug,
-            "game_auto_crawled": result.games_crawled > 0,
-            "critic_reviews": critic_reviews,
-            "user_reviews": user_reviews,
-            "counts": {
-                "critic_reviews": len(critic_reviews),
-                "user_reviews": len(user_reviews),
-            },
-        }
+        return self._build_reviews_response(
+            slug=slug,
+            critic_reviews=critic_reviews,
+            user_reviews=user_reviews,
+            game_auto_crawled=result.games_crawled > 0,
+        )
 
     @staticmethod
     def _serialize_search_match(match: SlugSearchMatch | None) -> dict[str, Any] | None:

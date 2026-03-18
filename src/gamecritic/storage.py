@@ -1083,6 +1083,42 @@ class SQLiteStorage:
             ).fetchall()
         return [payload for payload in (_json_loads(row[0]) for row in rows) if isinstance(payload, dict)]
 
+    def get_latest_critic_review_scraped_at(self, slug: str) -> str | None:
+        normalized_slug = slug.strip()
+        if not normalized_slug:
+            return None
+
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT MAX(scraped_at)
+                FROM critic_reviews
+                WHERE slug = ?
+                """,
+                (normalized_slug,),
+            ).fetchone()
+        if not row or row[0] is None:
+            return None
+        return str(row[0])
+
+    def get_latest_user_review_scraped_at(self, slug: str) -> str | None:
+        normalized_slug = slug.strip()
+        if not normalized_slug:
+            return None
+
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT MAX(scraped_at)
+                FROM user_reviews
+                WHERE slug = ?
+                """,
+                (normalized_slug,),
+            ).fetchone()
+        if not row or row[0] is None:
+            return None
+        return str(row[0])
+
     def get_state(self, key: str) -> str | None:
         with self._lock:
             cursor = self.conn.execute(
