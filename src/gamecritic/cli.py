@@ -33,6 +33,7 @@ from .storage import (
     SQLiteStorage,
     load_slug_search_candidates_from_db,
 )
+from .telegram_bot import GamecriticTelegramBot, TelegramApiError, TelegramBotConfig
 from .web_service import GamecriticWebService, WebServiceConfig
 
 DEFAULT_QUICKSTART_MAX_REVIEW_PAGES = 1
@@ -40,6 +41,7 @@ DEFAULT_CONCURRENCY = 4
 DEFAULT_SLUG_SYNC_BATCH_SIZE = 500
 SLUG_INDEX_FULL_SYNC_MAX_AGE = timedelta(days=7)
 SHARED_SETTINGS_PATH = "config/cli_settings.json"
+BOT_SETTINGS_PATH = "config/bot_settings.json"
 INTERACTIVE_WELCOME_CONTENT_WIDTH = 74
 INTERACTIVE_WELCOME_LABEL_WIDTH = 28
 INTERACTIVE_WELCOME_TITLE = "GAMECRITIC"
@@ -169,6 +171,9 @@ _INT_SETTING_KEYS = {"review_page_size", "concurrency", "max_retries", "server_p
 _FLOAT_SETTING_KEYS = {"timeout", "backoff", "delay"}
 _OPTIONAL_INT_SETTING_KEYS = {"max_review_pages"}
 _STRING_SETTING_KEYS = {"db", "export_output", "covers_dir", "server_host"}
+_BOT_INT_SETTING_KEYS = {"poll_timeout", "critic_reviews_per_page", "search_result_limit"}
+_BOT_FLOAT_SETTING_KEYS = {"request_timeout"}
+_BOT_STRING_SETTING_KEYS = {"backend_base_url", "bot_token", "telegram_api_base_url"}
 def _current_log_command_name() -> str:
     current = str(_LOG_COMMAND_CONTEXT.get() or "").strip().lower()
     return current or "command"
@@ -787,6 +792,9 @@ def run_serve(args: argparse.Namespace) -> int:
     service_stop_event = stop_event if stop_event is not None else threading.Event()
 
     service: GamecriticWebService | None = None
+    telegram_bot: GamecriticTelegramBot | None = None
+    telegram_bot_thread: threading.Thread | None = None
+    telegram_bot_thread_done = threading.Event()
     service = GamecriticWebService(
         db_path=args.db,
         config=WebServiceConfig(
@@ -820,6 +828,39 @@ def run_serve(args: argparse.Namespace) -> int:
                 daemon=True,
             )
             stop_watcher.start()
+
+        bot_args = _build_telegram_bot_namespace(_load_bot_settings(), stop_event=service_stop_event)
+        bot_args.backend_base_url = _build_local_backend_base_url(bound_host, bound_port)
+        try:
+            telegram_bot = _build_telegram_bot_service(bot_args)
+        except (SystemExit, ValueError) as exc:
+            logging.warning("telegram bot disabled: %s", exc)
+        else:
+            def _run_telegram_bot_worker() -> None:
+                try:
+                    logging.info(
+                        "telegram bot polling started backend=%s telegram_api=%s critic_reviews_per_page=%d",
+                        bot_args.backend_base_url,
+                        bot_args.telegram_api_base_url,
+                        int(bot_args.critic_reviews_per_page),
+                    )
+                    telegram_bot.serve_forever()
+                except TelegramApiError as exc:
+                    logging.warning("telegram bot stopped: %s", exc)
+                except KeyboardInterrupt:
+                    logging.info("telegram bot stopping")
+                finally:
+                    telegram_bot.close()
+                    telegram_bot_thread_done.set()
+
+            bot_context = copy_context()
+            telegram_bot_thread = threading.Thread(
+                target=bot_context.run,
+                args=(_run_telegram_bot_worker,),
+                name="telegram-bot",
+                daemon=True,
+            )
+            telegram_bot_thread.start()
         logging.info(
             "web service listening on http://%s:%d game_endpoint=/api/game?slug=<slug> reviews_endpoint=/api/reviews?slug=<slug>",
             bound_host,
@@ -839,8 +880,87 @@ def run_serve(args: argparse.Namespace) -> int:
         stop_watcher_done.set()
         if stop_watcher is not None and stop_watcher is not threading.current_thread():
             stop_watcher.join(timeout=0.2)
+        if telegram_bot is not None:
+            telegram_bot.close()
+        if telegram_bot_thread is not None and telegram_bot_thread is not threading.current_thread():
+            telegram_bot_thread_done.wait(0.2)
+            telegram_bot_thread.join(timeout=0.2)
         if service is not None:
             service.close()
+
+
+def _build_local_backend_base_url(host: str, port: int) -> str:
+    normalized_host = str(host or "").strip()
+    if not normalized_host or normalized_host in {"0.0.0.0", "::", "[::]"}:
+        normalized_host = "127.0.0.1"
+    if ":" in normalized_host and not normalized_host.startswith("["):
+        normalized_host = f"[{normalized_host}]"
+    return f"http://{normalized_host}:{int(port)}"
+
+
+def _build_telegram_bot_config(args: argparse.Namespace) -> TelegramBotConfig:
+    bot_token = str(args.bot_token or "").strip()
+    if not bot_token:
+        raise SystemExit("bot_token must be configured in config/bot_settings.json")
+
+    backend_base_url = str(args.backend_base_url or "").strip()
+    telegram_api_base_url = str(args.telegram_api_base_url or "").strip()
+    if not backend_base_url:
+        raise SystemExit("backend_base_url must be a non-empty string")
+    if not telegram_api_base_url:
+        raise SystemExit("telegram_api_base_url must be a non-empty string")
+    if int(args.poll_timeout) < 0:
+        raise SystemExit("poll_timeout must be >= 0")
+    if float(args.request_timeout) <= 0:
+        raise SystemExit("request_timeout must be > 0")
+    if int(args.critic_reviews_per_page) < 1:
+        raise SystemExit("critic_reviews_per_page must be >= 1")
+    if int(args.search_result_limit) < 1:
+        raise SystemExit("search_result_limit must be >= 1")
+
+    return TelegramBotConfig(
+        bot_token=bot_token,
+        backend_base_url=backend_base_url,
+        telegram_api_base_url=telegram_api_base_url,
+        request_timeout=float(args.request_timeout),
+        poll_timeout=int(args.poll_timeout),
+        critic_reviews_per_page=int(args.critic_reviews_per_page),
+        search_result_limit=int(args.search_result_limit),
+    )
+
+
+def _build_telegram_bot_service(args: argparse.Namespace) -> GamecriticTelegramBot:
+    return GamecriticTelegramBot(
+        config=_build_telegram_bot_config(args),
+        stop_event=_get_stop_event(args),
+    )
+
+
+def run_telegram_bot(args: argparse.Namespace) -> int:
+    config = _build_telegram_bot_config(args)
+    bot = GamecriticTelegramBot(config=config, stop_event=_get_stop_event(args))
+    stop_event = _get_stop_event(args)
+    try:
+        logging.info(
+            "telegram bot polling backend=%s telegram_api=%s critic_reviews_per_page=%d",
+            config.backend_base_url,
+            config.telegram_api_base_url,
+            int(args.critic_reviews_per_page),
+        )
+        try:
+            bot.serve_forever()
+        except TelegramApiError as exc:
+            logging.warning("telegram bot stopped: %s", exc)
+            return 2
+        except KeyboardInterrupt:
+            logging.info("telegram bot stopping")
+            return 130
+        if stop_event is not None and stop_event.is_set():
+            logging.info("telegram bot stopped")
+            return 130
+        return 0
+    finally:
+        bot.close()
 
 
 def _download_covers_summary_text(
@@ -1069,6 +1189,18 @@ def _interactive_defaults() -> dict[str, object]:
     }
 
 
+def _telegram_bot_defaults() -> dict[str, object]:
+    return {
+        "backend_base_url": "http://127.0.0.1:8000",
+        "bot_token": "",
+        "telegram_api_base_url": "https://api.telegram.org",
+        "poll_timeout": 30,
+        "request_timeout": 30.0,
+        "critic_reviews_per_page": 5,
+        "search_result_limit": 8,
+    }
+
+
 def _coerce_loaded_setting_value(key: str, value: object) -> object:
     if key in _BOOL_SETTING_KEYS:
         if isinstance(value, bool):
@@ -1126,6 +1258,46 @@ def _save_shared_settings(settings: dict[str, object]) -> None:
     with open(SHARED_SETTINGS_PATH, "w", encoding="utf-8") as fp:
         json.dump(settings, fp, ensure_ascii=True, indent=2, sort_keys=True)
         fp.write("\n")
+
+
+def _coerce_loaded_bot_setting_value(key: str, value: object) -> object:
+    if key in _BOT_INT_SETTING_KEYS:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        raise ValueError(f"invalid integer bot setting: {key}")
+    if key in _BOT_FLOAT_SETTING_KEYS:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        raise ValueError(f"invalid float bot setting: {key}")
+    if key in _BOT_STRING_SETTING_KEYS:
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"invalid string bot setting: {key}")
+    raise KeyError(f"unknown bot setting key: {key}")
+
+
+def _load_bot_settings() -> dict[str, object]:
+    settings = _telegram_bot_defaults()
+    if not os.path.isfile(BOT_SETTINGS_PATH):
+        return settings
+
+    try:
+        with open(BOT_SETTINGS_PATH, "r", encoding="utf-8") as fp:
+            raw_settings = json.load(fp)
+    except (OSError, ValueError, TypeError):
+        return settings
+
+    if not isinstance(raw_settings, dict):
+        return settings
+
+    for key, value in raw_settings.items():
+        if key not in settings:
+            continue
+        try:
+            settings[key] = _coerce_loaded_bot_setting_value(str(key), value)
+        except (KeyError, ValueError):
+            continue
+    return settings
 
 
 def _build_crawl_namespace(
@@ -1267,6 +1439,24 @@ def _build_serve_namespace(
         max_retries=int(settings["max_retries"]),
         backoff=float(settings["backoff"]),
         delay=float(settings["delay"]),
+        stop_event=stop_event,
+    )
+
+
+def _build_telegram_bot_namespace(
+    settings: dict[str, object],
+    *,
+    stop_event: threading.Event | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        command="telegram-bot",
+        backend_base_url=str(settings["backend_base_url"]),
+        bot_token=str(settings["bot_token"]),
+        telegram_api_base_url=str(settings["telegram_api_base_url"]),
+        poll_timeout=int(settings["poll_timeout"]),
+        request_timeout=float(settings["request_timeout"]),
+        critic_reviews_per_page=int(settings["critic_reviews_per_page"]),
+        search_result_limit=int(settings["search_result_limit"]),
         stop_event=stop_event,
     )
 

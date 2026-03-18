@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
+- Telegram bot MVP on top of the local HTTP API, currently supporting search, game details, and critic-review pagination.
 
 ## [0.2.3] - 2026-03-18
 

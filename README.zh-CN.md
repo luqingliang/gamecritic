@@ -90,6 +90,37 @@ gamecritic
 }
 ```
 
+## Telegram Bot Settings
+
+`config/bot_settings.json` 是由 `gamecritic serve` 一并拉起的 Telegram 机器人专用配置文件。
+`bot_token` 必须直接配置在这个文件里；如果缺失或者被 Telegram 判定为无效，
+程序只会输出 warning，Web 服务仍然会正常启动。
+
+```jsonc
+{
+  // 本地 gamecritic HTTP API 地址
+  "backend_base_url": "http://127.0.0.1:8000",
+
+  // Telegram 机器人 token
+  "bot_token": "",
+
+  // Telegram Bot API 地址
+  "telegram_api_base_url": "https://api.telegram.org",
+
+  // 长轮询超时时间，单位为秒
+  "poll_timeout": 30,
+
+  // Telegram 与后端 API 共用的 HTTP 超时时间
+  "request_timeout": 30.0,
+
+  // Telegram 里每页展示的媒体评论数
+  "critic_reviews_per_page": 5,
+
+  // 搜索结果最多展示多少个按钮
+  "search_result_limit": 8
+}
+```
+
 ## 常用命令
 
 ```bash
@@ -121,6 +152,7 @@ gamecritic download-covers the-legend-of-zelda-breath-of-the-wild
 gamecritic export-excel
 
 # 启动 HTTP API 服务
+# 当 bot_settings.json 配置有效时，也会同时启动 Telegram 机器人
 gamecritic serve
 
 # 在保留表结构的前提下一键清空所有业务表
@@ -152,12 +184,29 @@ gamecritic serve
 - `GET /api/games/<slug>`
 - `GET /api/games/<slug>/reviews`
 
+## Telegram 机器人
+
+Telegram 机器人是构建在本地 HTTP API 之上的一层薄客户端。
+当 `config/bot_settings.json` 配置有效时，执行 `gamecritic serve` 会同时拉起 Web 服务和 Telegram 机器人：
+
+```bash
+gamecritic serve
+```
+
+当前 MVP 支持：
+
+- 直接发送游戏名进行搜索
+- 对歧义结果使用 inline button 点选
+- 查看单个游戏详情
+- 仅查看媒体评论分页
+
+当前还不支持在机器人里浏览用户评论。
+
 ## 数据表结构
 
 SQLite 表：
 
-- `games`：保存抓取到的游戏基础信息、评分摘要、封面链接，以及原始 product/summary JSON 快照。
-- `games`：同时保存从 sitemap 同步得到的 slug 索引和已抓取的游戏元数据。
+- `games`：同时保存从 sitemap 同步得到的 slug 索引、已抓取的游戏基础信息、评分摘要、封面链接，以及原始 product/summary JSON 快照。
 - `critic_reviews`：保存与游戏 slug 关联的媒体评论数据。
 - `user_reviews`：保存按 `review_id` 去重、并关联到游戏 slug 的用户评论数据。
 - `sync_state`：保存轻量级键值状态，例如同步进度检查点。

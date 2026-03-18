@@ -1,0 +1,9 @@
+{
+  "backend_base_url": "http://127.0.0.1:8000",
+  "bot_token": "",
+  "critic_reviews_per_page": 5,
+  "poll_timeout": 30,
+  "request_timeout": 30.0,
+  "search_result_limit": 8,
+  "telegram_api_base_url": "https://api.telegram.org"
+}
