@@ -10,6 +10,17 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.2.3] - 2026-03-18
+
+### Changed
+- Simplified slug inventory storage by folding synced slug records directly into `games` instead of maintaining a separate `game_slugs` table.
+- `crawl-reviews` now requires an explicit `<slug>` and crawls the requested slug's review data directly.
+- `search-slug` and the web search flow now use precomputed search fields plus a two-stage shortlist search for faster local matching on large databases.
+- The game detail UI was simplified by removing the cache-hit badge and bottom technical info panel.
+
+### Fixed
+- `/api/game` and `/api/reviews` now refresh stale cached data older than 30 days before returning it, with cache fallback when refresh fails.
+
 ## [0.2.2] - 2026-03-17
 
 ### Added
