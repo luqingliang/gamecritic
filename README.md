@@ -98,7 +98,7 @@ Parameter reference:
 # Open the interactive shell
 gamecritic interactive
 
-# Crawl all stored slugs from `game_slugs`
+# Crawl all stored slugs from the local indexed slug inventory
 gamecritic crawl
 
 # Search the local slug index by game name
@@ -107,10 +107,7 @@ gamecritic search-slug "The Legend of Zelda Breath of the Wild"
 # Crawl one game by slug
 gamecritic crawl-one the-legend-of-zelda-breath-of-the-wild
 
-# Backfill reviews for all crawled games
-gamecritic crawl-reviews
-
-# Or pass an optional `[slug]` to backfill one game
+# Backfill reviews for one crawled game
 gamecritic crawl-reviews the-legend-of-zelda-breath-of-the-wild
 
 # Sync all sitemap slugs into SQLite
@@ -162,7 +159,7 @@ Path-style variants:
 SQLite tables:
 
 - `games`: Stores crawled game metadata, score summaries, cover URL, and raw product/summary JSON snapshots.
-- `game_slugs`: Stores the sitemap-derived slug index, including source sitemap and discovery timestamps.
+- `games`: Stores both the sitemap-derived slug index and crawled game metadata in one table.
 - `critic_reviews`: Stores critic review records associated with each game slug.
 - `user_reviews`: Stores user review records keyed by review ID and linked back to each game slug.
 - `sync_state`: Stores lightweight key-value checkpoints such as sync progress markers.

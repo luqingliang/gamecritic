@@ -96,7 +96,7 @@ gamecritic
 # 进入交互模式
 gamecritic interactive
 
-# 抓取 `game_slugs` 表中的全部 slug
+# 抓取本地索引 slug 清单中的全部 slug
 gamecritic crawl
 
 # 按游戏名称在本地 slug 索引里查找最佳匹配
@@ -105,10 +105,7 @@ gamecritic search-slug "The Legend of Zelda Breath of the Wild"
 # 按 slug 抓取单个游戏
 gamecritic crawl-one the-legend-of-zelda-breath-of-the-wild
 
-# 为所有已抓取游戏补抓评论
-gamecritic crawl-reviews
-
-# 也可以传入可选 `[slug]`，只为单个游戏补抓评论
+# 为单个已抓取游戏补抓评论
 gamecritic crawl-reviews the-legend-of-zelda-breath-of-the-wild
 
 # 将 sitemap 中的全部 slug 同步到 SQLite
@@ -160,7 +157,7 @@ gamecritic serve
 SQLite 表：
 
 - `games`：保存抓取到的游戏基础信息、评分摘要、封面链接，以及原始 product/summary JSON 快照。
-- `game_slugs`：保存从 sitemap 同步得到的 slug 索引，以及来源 sitemap 和发现时间信息。
+- `games`：同时保存从 sitemap 同步得到的 slug 索引和已抓取的游戏元数据。
 - `critic_reviews`：保存与游戏 slug 关联的媒体评论数据。
 - `user_reviews`：保存按 `review_id` 去重、并关联到游戏 slug 的用户评论数据。
 - `sync_state`：保存轻量级键值状态，例如同步进度检查点。

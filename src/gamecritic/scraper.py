@@ -364,10 +364,10 @@ class MetacriticScraper:
         covers_dir: str = "data/covers",
         overwrite_covers: bool = False,
     ) -> CrawlResult:
-        full_crawl_slugs = self.storage.list_game_slugs()
+        full_crawl_slugs = self.storage.list_indexed_slugs()
 
         if not full_crawl_slugs:
-            logger.warning("game_slugs table is empty or no rows matched; run sync-slugs first")
+            logger.warning("indexed slug inventory is empty or no rows matched; run sync-slugs first")
 
         cover_downloader = None
         if download_covers:
@@ -397,25 +397,29 @@ class MetacriticScraper:
         max_review_pages: int | None,
         concurrency: int = 4,
     ) -> CrawlResult:
-        review_slugs = self.storage.list_crawled_game_slugs(slug=slug)
         normalized_slug = str(slug or "").strip()
 
-        if not review_slugs:
-            if normalized_slug:
-                logger.warning(
-                    "games table has no matching row for slug=%s; crawling game before backfilling reviews",
-                    normalized_slug,
-                )
-                return self._crawl_slugs(
-                    [normalized_slug],
+        if normalized_slug:
+            return self._crawl_slugs(
+                [normalized_slug],
+                include_critic_reviews=include_critic_reviews,
+                include_user_reviews=include_user_reviews,
+                review_page_size=review_page_size,
+                max_review_pages=max_review_pages,
+                concurrency=concurrency,
+                slug_handler=lambda one_slug: self.crawl_reviews_for_slug(
+                    one_slug,
                     include_critic_reviews=include_critic_reviews,
                     include_user_reviews=include_user_reviews,
                     review_page_size=review_page_size,
                     max_review_pages=max_review_pages,
-                    concurrency=concurrency,
-                )
-            else:
-                logger.warning("games table is empty or no rows matched; crawl games first")
+                ),
+            )
+
+        review_slugs = self.storage.list_crawled_slugs(slug=slug)
+
+        if not review_slugs:
+            logger.warning("games table is empty or no rows matched; crawl games first")
 
         return self._crawl_slugs(
             review_slugs,

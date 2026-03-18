@@ -13,12 +13,12 @@ class _ClientThatShouldNotListSlugs:
 
 
 class FullCrawlStorageSelectionTestCase(unittest.TestCase):
-    def test_list_game_slugs_orders_stored_inventory(self) -> None:
+    def test_list_indexed_slugs_orders_stored_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         ("gamma", "https://www.metacritic.com/game/gamma/", "https://www.metacritic.com/sitemap-2.xml"),
                         ("beta", "https://www.metacritic.com/game/beta/", "https://www.metacritic.com/sitemap-1.xml"),
@@ -27,11 +27,11 @@ class FullCrawlStorageSelectionTestCase(unittest.TestCase):
                     ]
                 )
 
-                self.assertEqual(storage.list_game_slugs(), ["alpha", "beta", "gamma", "delta"])
+                self.assertEqual(storage.list_indexed_slugs(), ["alpha", "beta", "gamma", "delta"])
             finally:
                 storage.close()
 
-    def test_list_crawled_game_slugs_orders_games_table(self) -> None:
+    def test_list_crawled_slugs_orders_games_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -58,11 +58,11 @@ class FullCrawlStorageSelectionTestCase(unittest.TestCase):
                     cover_url=None,
                 )
 
-                self.assertEqual(storage.list_crawled_game_slugs(), ["alpha", "beta", "gamma"])
+                self.assertEqual(storage.list_crawled_slugs(), ["alpha", "beta", "gamma"])
             finally:
                 storage.close()
 
-    def test_list_crawled_game_slugs_filters_by_slug(self) -> None:
+    def test_list_crawled_slugs_filters_by_slug(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -76,18 +76,18 @@ class FullCrawlStorageSelectionTestCase(unittest.TestCase):
                         cover_url=None,
                     )
 
-                self.assertEqual(storage.list_crawled_game_slugs(slug="beta"), ["beta"])
+                self.assertEqual(storage.list_crawled_slugs(slug="beta"), ["beta"])
             finally:
                 storage.close()
 
 
 class FullCrawlSourceTestCase(unittest.TestCase):
-    def test_crawl_from_sitemaps_reads_slugs_from_game_slugs_table(self) -> None:
+    def test_crawl_from_sitemaps_reads_slugs_from_indexed_games(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         ("alpha", "https://www.metacritic.com/game/alpha/", "https://www.metacritic.com/sitemap-1.xml"),
                         ("beta", "https://www.metacritic.com/game/beta/", "https://www.metacritic.com/sitemap-1.xml"),
@@ -200,19 +200,8 @@ class FullCrawlSourceTestCase(unittest.TestCase):
             finally:
                 storage.close()
 
-    def test_crawl_reviews_from_games_crawls_and_persists_missing_requested_slug(self) -> None:
-        class _ClientWithFallbackCrawl:
-            def fetch_product(self, slug: str) -> dict:
-                return {"data": {"item": {"id": 101, "title": slug, "platform": "PC"}}}
-
-            def resolve_cover_url(self, *, product_payload: dict) -> str | None:
-                del product_payload
-                return None
-
-            def fetch_score_summary(self, slug: str, review_type: str) -> dict | None:
-                del slug, review_type
-                return None
-
+    def test_crawl_reviews_from_games_directly_fetches_requested_slug_without_game_row(self) -> None:
+        class _ClientWithDirectReviewFetch:
             def iter_reviews(
                 self,
                 *,
@@ -246,7 +235,7 @@ class FullCrawlSourceTestCase(unittest.TestCase):
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                scraper = MetacriticScraper(_ClientWithFallbackCrawl(), storage)
+                scraper = MetacriticScraper(_ClientWithDirectReviewFetch(), storage)
 
                 result = scraper.crawl_reviews_from_games(
                     slug="missing-game",
@@ -257,13 +246,14 @@ class FullCrawlSourceTestCase(unittest.TestCase):
                     concurrency=1,
                 )
 
-                self.assertEqual(result.games_crawled, 1)
+                self.assertEqual(result.games_crawled, 0)
+                self.assertEqual(result.slugs_processed, 1)
                 self.assertEqual(result.critic_reviews_saved, 1)
                 self.assertEqual(result.user_reviews_saved, 1)
                 self.assertEqual(result.failed_slugs, [])
                 self.assertFalse(result.stopped)
-                self.assertEqual(storage.list_crawled_game_slugs(slug="missing-game"), ["missing-game"])
-                self.assertEqual(storage.count_rows("games"), 1)
+                self.assertEqual(storage.list_crawled_slugs(slug="missing-game"), [])
+                self.assertEqual(storage.count_rows("games"), 0)
                 self.assertEqual(storage.count_rows("critic_reviews"), 1)
                 self.assertEqual(storage.count_rows("user_reviews"), 1)
             finally:
@@ -460,7 +450,7 @@ class FullCrawlSourceTestCase(unittest.TestCase):
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         ("falcon-40", "https://www.metacritic.com/game/falcon-40/", "https://www.metacritic.com/sitemap-1.xml"),
                         (
@@ -507,7 +497,7 @@ class FullCrawlSourceTestCase(unittest.TestCase):
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         ("alpha", "https://www.metacritic.com/game/alpha/", "https://www.metacritic.com/sitemap-1.xml"),
                         ("beta", "https://www.metacritic.com/game/beta/", "https://www.metacritic.com/sitemap-1.xml"),

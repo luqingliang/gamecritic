@@ -13,11 +13,11 @@ from gamecritic.cli import (
     INTERACTIVE_HELP_EXAMPLES_EN,
     INTERACTIVE_HELP_SAMPLE_SIZE,
     INTERACTIVE_BACKGROUND_COMMANDS,
-    GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
-    INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT,
+    INTERACTIVE_SLUG_INDEX_STATUS_LOADING_TEXT,
     INTERACTIVE_WELCOME_CONTENT_WIDTH,
     INTERACTIVE_WELCOME_TITLE,
     LOG_BULLET,
+    SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
     _InteractiveLogHandler,
     _build_clear_db_namespace,
     _build_crawl_namespace,
@@ -29,9 +29,9 @@ from gamecritic.cli import (
     _convert_setting_value,
     _interactive_banner_lines,
     _interactive_command_is_running,
-    _interactive_game_slugs_status_text,
+    _interactive_slug_index_status_text,
     _interactive_help_hint_text,
-    _schedule_interactive_game_slugs_status_refresh,
+    _schedule_interactive_slug_index_status_refresh,
     _interactive_title_art_lines,
     _interactive_welcome_rows,
     _interactive_defaults,
@@ -60,10 +60,10 @@ from gamecritic.storage import SQLiteStorage
 
 
 class InteractiveCliParsingTestCase(unittest.TestCase):
-    def test_schedule_interactive_game_slugs_status_refresh_runs_in_background(self) -> None:
+    def test_schedule_interactive_slug_index_status_refresh_runs_in_background(self) -> None:
         refreshed = threading.Event()
 
-        worker = _schedule_interactive_game_slugs_status_refresh(refreshed.set)
+        worker = _schedule_interactive_slug_index_status_refresh(refreshed.set)
 
         self.assertTrue(worker.daemon)
         self.assertTrue(refreshed.wait(1.0))
@@ -116,7 +116,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 ["crawl-one", "demo-game"],
                 settings,
                 output.append,
-                refresh_game_slugs_status=lambda: refresh_calls.append("refreshed"),
+                refresh_slug_index_status=lambda: refresh_calls.append("refreshed"),
             )
 
         self.assertTrue(keep_running)
@@ -192,7 +192,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         ("alpha", "https://www.metacritic.com/game/alpha/", "https://www.metacritic.com/sitemap-1.xml"),
                         ("broken", "https://www.metacritic.com/game/broken/", "https://www.metacritic.com/sitemap-1.xml"),
@@ -372,12 +372,10 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertEqual(args.query, ["Elden", "Ring"])
         self.assertEqual(set(vars(args)), {"verbose", "command", "query"})
 
-    def test_crawl_reviews_parser_defaults(self) -> None:
+    def test_crawl_reviews_parser_requires_slug(self) -> None:
         parser = build_parser()
-        args = parser.parse_args(["crawl-reviews"])
-        self.assertEqual(args.command, "crawl-reviews")
-        self.assertIsNone(args.slug)
-        self.assertEqual(set(vars(args)), {"verbose", "command", "slug"})
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["crawl-reviews"])
 
     def test_crawl_reviews_parser_accepts_slug(self) -> None:
         parser = build_parser()
@@ -506,7 +504,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 "crawl",
                 "search-slug <game_name>",
                 "crawl-one <slug>",
-                "crawl-reviews [slug]",
+                "crawl-reviews <slug>",
                 "sync-slugs",
                 "download-covers [slug]",
                 "export-excel [output_path]",
@@ -761,7 +759,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 ["download-covers", "demo-game"],
                 settings,
                 output.append,
-                refresh_game_slugs_status=lambda: refresh_calls.append("refreshed"),
+                refresh_slug_index_status=lambda: refresh_calls.append("refreshed"),
             )
 
         self.assertTrue(keep_running)
@@ -896,12 +894,17 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         stop_event = threading.Event()
         with patch("gamecritic.cli._run_with_captured_stdout", side_effect=_fake_run_with_captured_stdout):
-            keep_running = _run_interactive_command(["crawl-reviews"], settings, output.append, stop_event=stop_event)
+            keep_running = _run_interactive_command(
+                ["crawl-reviews", "demo-game"],
+                settings,
+                output.append,
+                stop_event=stop_event,
+            )
 
         self.assertTrue(keep_running)
         self.assertEqual(captured.get("func_name"), "run_crawl_reviews")
         self.assertEqual(captured.get("command"), "crawl-reviews")
-        self.assertIsNone(captured.get("slug"))
+        self.assertEqual(captured.get("slug"), "demo-game")
         self.assertTrue(captured.get("include_critic_reviews"))
         self.assertTrue(captured.get("include_user_reviews"))
         self.assertTrue(captured.get("print_summary"))
@@ -934,7 +937,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 ["crawl-reviews", "demo-game"],
                 settings,
                 output.append,
-                refresh_game_slugs_status=lambda: refresh_calls.append("refreshed"),
+                refresh_slug_index_status=lambda: refresh_calls.append("refreshed"),
             )
 
         self.assertTrue(keep_running)
@@ -948,7 +951,16 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         keep_running = _run_interactive_command(["crawl-reviews", "demo-game", "extra"], settings, output.append)
 
         self.assertTrue(keep_running)
-        self.assertEqual(output, ["Usage: crawl-reviews [slug]"])
+        self.assertEqual(output, ["Usage: crawl-reviews <slug>"])
+
+    def test_interactive_crawl_reviews_requires_slug(self) -> None:
+        settings = _interactive_defaults()
+        output: list[str] = []
+
+        keep_running = _run_interactive_command(["crawl-reviews"], settings, output.append)
+
+        self.assertTrue(keep_running)
+        self.assertEqual(output, ["Usage: crawl-reviews <slug>"])
 
     def test_interactive_crawl_reviews_ignores_crawl_review_toggle_settings(self) -> None:
         settings = _interactive_defaults()
@@ -963,7 +975,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             emit("[done] exit_code=0")
 
         with patch("gamecritic.cli._run_with_captured_stdout", side_effect=_fake_run_with_captured_stdout):
-            keep_running = _run_interactive_command(["crawl-reviews"], settings, output.append)
+            keep_running = _run_interactive_command(["crawl-reviews", "demo-game"], settings, output.append)
 
         self.assertTrue(keep_running)
         self.assertTrue(captured.get("include_critic_reviews"))
@@ -1030,6 +1042,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
     def test_run_crawl_reviews_defaults_to_both_review_types_when_interactive_settings_disable_both(self) -> None:
         args = argparse.Namespace(
+            slug="demo-game",
             db="data/gamecritic.db",
             include_critic_reviews=False,
             include_user_reviews=False,
@@ -1060,7 +1073,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         scraper.crawl_reviews_from_games.assert_called_once_with(
-            slug=None,
+            slug="demo-game",
             include_critic_reviews=True,
             include_user_reviews=True,
             review_page_size=50,
@@ -1072,6 +1085,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_run_crawl_reviews_returns_130_when_scraper_stops(self) -> None:
         args = _build_crawl_reviews_namespace(
             _interactive_defaults(),
+            slug="demo-game",
             print_summary=False,
             stop_event=threading.Event(),
         )
@@ -1093,6 +1107,28 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIs(scraper_cls.call_args.kwargs["stop_event"], args.stop_event)
         scraper.crawl_reviews_from_games.assert_called_once()
         storage.close.assert_called_once()
+
+    def test_run_crawl_reviews_rejects_missing_slug(self) -> None:
+        args = argparse.Namespace(
+            slug="",
+            db="data/gamecritic.db",
+            include_critic_reviews=True,
+            include_user_reviews=True,
+            review_page_size=50,
+            max_review_pages=1,
+            concurrency=4,
+            timeout=10.0,
+            max_retries=2,
+            backoff=0.5,
+            delay=0.0,
+            print_summary=False,
+            stop_event=None,
+        )
+
+        with self.assertRaises(SystemExit) as ctx:
+            run_crawl_reviews(args)
+
+        self.assertEqual(str(ctx.exception), "crawl-reviews requires a non-empty slug")
 
     def test_run_crawl_reviews_filters_by_slug_when_requested(self) -> None:
         args = _build_crawl_reviews_namespace(
@@ -1128,6 +1164,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_run_crawl_reviews_logs_games_crawled_and_prints_summary(self) -> None:
         args = _build_crawl_reviews_namespace(
             _interactive_defaults(),
+            slug="demo-game",
             print_summary=True,
         )
 
@@ -1356,7 +1393,6 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             "critic_reviews": 3,
             "user_reviews": 2,
             "games": 1,
-            "game_slugs": 4,
             "sync_state": 1,
         }
 
@@ -1368,7 +1404,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         print_mock.assert_called_once_with(
-            "clear-db summary: critic_reviews=3 user_reviews=2 games=1 game_slugs=4 sync_state=1 total=11"
+            "clear-db summary: critic_reviews=3 user_reviews=2 games=1 sync_state=1 total=7"
         )
         storage.close.assert_called_once()
 
@@ -1407,7 +1443,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         (
                             "grand-theft-auto-v",
@@ -1636,7 +1672,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         )
 
         storage = MagicMock()
-        storage.upsert_game_slugs.return_value = (0, 0, 0)
+        storage.upsert_indexed_slugs.return_value = (0, 0, 0)
         storage.count_rows.return_value = 0
         client = MagicMock()
         client.__enter__.return_value = client
@@ -1669,7 +1705,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
         self.assertIn("background task or web service", banner_text)
         self.assertIn("crawl-one <slug>", banner_text)
         self.assertIn("search-slug <game_name>", banner_text)
-        self.assertIn("crawl-reviews [slug]", banner_text)
+        self.assertIn("crawl-reviews <slug>", banner_text)
         self.assertIn("serve", banner_text)
         self.assertIn("Up / Down", banner_text)
 
@@ -1681,7 +1717,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 "crawl",
                 "search-slug <game_name>",
                 "crawl-one <slug>",
-                "crawl-reviews [slug]",
+                "crawl-reviews <slug>",
                 "serve",
                 "show",
                 "stop",
@@ -1708,7 +1744,7 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
     def test_serve_runs_as_background_interactive_command(self) -> None:
         self.assertIn("serve", INTERACTIVE_BACKGROUND_COMMANDS)
 
-    def test_interactive_game_slugs_status_text_uses_sync_state_update_time(self) -> None:
+    def test_interactive_slug_index_status_text_uses_sync_state_update_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -1720,27 +1756,27 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                     user_summary_payload=None,
                     cover_url=None,
                 )
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [("demo-game", "https://example.com/game/demo-game", "https://example.com/games.xml")]
                 )
                 storage.conn.execute(
-                    "UPDATE game_slugs SET last_seen_at = ? WHERE slug = ?",
+                    "UPDATE games SET last_seen_at = ? WHERE slug = ?",
                     ("2026-03-11T08:30:00+00:00", "demo-game"),
                 )
                 storage.conn.commit()
                 storage.set_state(
-                    GAME_SLUGS_LAST_FULL_SYNC_AT_STATE_KEY,
+                    SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
                     "2026-03-11T09:45:00+00:00",
                 )
             finally:
                 storage.close()
 
             self.assertEqual(
-                _interactive_game_slugs_status_text(str(db_path)),
-                "games total=1 | game_slugs total=1 | last full sync=2026-03-11",
+                _interactive_slug_index_status_text(str(db_path)),
+                "games total=1 | indexed slugs total=1 | last full sync=2026-03-11",
             )
 
-    def test_interactive_game_slugs_status_text_handles_missing_sync_state(self) -> None:
+    def test_interactive_slug_index_status_text_handles_missing_sync_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
@@ -1752,11 +1788,11 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                     user_summary_payload=None,
                     cover_url=None,
                 )
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [("demo-game", "https://example.com/game/demo-game", "https://example.com/games.xml")]
                 )
                 storage.conn.execute(
-                    "UPDATE game_slugs SET last_seen_at = ? WHERE slug = ?",
+                    "UPDATE games SET last_seen_at = ? WHERE slug = ?",
                     ("2026-03-11T08:30:00+00:00", "demo-game"),
                 )
                 storage.conn.commit()
@@ -1764,22 +1800,22 @@ class InteractiveCliParsingTestCase(unittest.TestCase):
                 storage.close()
 
             self.assertEqual(
-                _interactive_game_slugs_status_text(str(db_path)),
-                "games total=1 | game_slugs total=1 | last full sync=never",
+                _interactive_slug_index_status_text(str(db_path)),
+                "games total=1 | indexed slugs total=1 | last full sync=never",
             )
 
-    def test_interactive_game_slugs_status_text_handles_missing_db(self) -> None:
+    def test_interactive_slug_index_status_text_handles_missing_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             missing_db_path = Path(tmpdir) / "missing.db"
             self.assertEqual(
-                _interactive_game_slugs_status_text(str(missing_db_path)),
-                "games total=0 | game_slugs total=0 | last full sync=never",
+                _interactive_slug_index_status_text(str(missing_db_path)),
+                "games total=0 | indexed slugs total=0 | last full sync=never",
             )
 
-    def test_interactive_game_slugs_status_loading_text(self) -> None:
+    def test_interactive_slug_index_status_loading_text(self) -> None:
         self.assertEqual(
-            INTERACTIVE_GAME_SLUGS_STATUS_LOADING_TEXT,
-            "games total=... | game_slugs total=... | last full sync=loading",
+            INTERACTIVE_SLUG_INDEX_STATUS_LOADING_TEXT,
+            "games total=... | indexed slugs total=... | last full sync=loading",
         )
 
     def test_interactive_command_is_running_clears_finished_thread(self) -> None:

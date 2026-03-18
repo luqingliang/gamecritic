@@ -8,11 +8,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .slug_search import (
+    SEARCH_SLUG_SHORTLIST_LIMIT,
+    SlugSearchCandidate,
+    build_slug_search_candidate,
+    build_slug_search_query,
+    compute_slug_search_fields,
+)
+
+LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY = "game_slugs_last_successful_full_sync_at"
+SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY = "indexed_slugs_last_successful_full_sync_at"
+
 APP_TABLE_NAMES = (
     "critic_reviews",
     "user_reviews",
     "games",
-    "game_slugs",
     "sync_state",
 )
 
@@ -37,65 +47,312 @@ def _json_loads(data: object | None) -> Any:
 
 
 def _merge_slug_search_candidates(
-    games_rows: Iterable[tuple[object, object]],
-    slug_rows: Iterable[tuple[object]],
-) -> list[tuple[str, str | None]]:
-    by_slug: dict[str, str | None] = {}
-
+    games_rows: Iterable[tuple[object, object, object, object, object, object]],
+) -> list[SlugSearchCandidate]:
+    candidates: list[SlugSearchCandidate] = []
     for row in games_rows:
-        slug = str(row[0]).strip()
-        if not slug:
-            continue
-        title = row[1]
-        normalized_title = str(title).strip() if title is not None else None
-        by_slug[slug] = normalized_title or None
-
-    for row in slug_rows:
-        slug = str(row[0]).strip()
-        if not slug or slug in by_slug:
-            continue
-        by_slug[slug] = None
-
-    return sorted(by_slug.items(), key=lambda item: item[0])
+        candidate = build_slug_search_candidate(
+            slug=str(row[0]),
+            title=str(row[1]).strip() if row[1] is not None else None,
+            slug_search_text=str(row[2]).strip() if row[2] is not None else None,
+            title_search_text=str(row[3]).strip() if row[3] is not None else None,
+            slug_acronym=str(row[4]).strip() if row[4] is not None else None,
+            title_acronym=str(row[5]).strip() if row[5] is not None else None,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
 
 
-def _query_slug_search_candidates(conn: sqlite3.Connection) -> list[tuple[str, str | None]]:
+def _prefix_upper_bound(prefix: str) -> str:
+    if not prefix:
+        return prefix
+    return prefix + "\U0010FFFF"
+
+
+def _candidate_row_order_clause(*, prefer_title: bool = False, prefer_exact_field: str | None = None) -> str:
+    order_parts = []
+    if prefer_exact_field:
+        order_parts.append(f"CASE WHEN {prefer_exact_field} THEN 0 ELSE 1 END")
+    if prefer_title:
+        order_parts.append("CASE WHEN COALESCE(TRIM(title), '') = '' THEN 1 ELSE 0 END")
+    order_parts.extend(("LENGTH(slug)", "slug"))
+    return ", ".join(order_parts)
+
+
+def _fetch_slug_search_rows(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int,
+) -> list[tuple[object, object, object, object, object, object]]:
+    query_context = build_slug_search_query(query)
+    if not query_context.search_text or limit <= 0:
+        return []
+
+    collected_rows: list[tuple[object, object, object, object, object, object]] = []
+    seen_slugs: set[str] = set()
+
+    def collect(sql: str, params: tuple[object, ...]) -> None:
+        remaining = limit - len(collected_rows)
+        if remaining <= 0:
+            return
+        rows = conn.execute(sql, (*params, remaining)).fetchall()
+        for row in rows:
+            slug = str(row[0]).strip()
+            if not slug or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            collected_rows.append(row)
+            if len(collected_rows) >= limit:
+                break
+
+    base_select = """
+        SELECT slug, title, slug_search_text, title_search_text, slug_acronym, title_acronym
+        FROM games
+        WHERE slug IS NOT NULL AND TRIM(slug) != ''
+    """
+
+    exact_text_sql = (
+        base_select
+        + """
+          AND (title_search_text = ? OR slug_search_text = ?)
+        ORDER BY
+            CASE
+                WHEN title_search_text = ? THEN 0
+                WHEN slug_search_text = ? THEN 1
+                ELSE 2
+            END,
+            """
+        + _candidate_row_order_clause(prefer_title=True)
+        + """
+        LIMIT ?
+        """
+    )
+    collect(
+        exact_text_sql,
+        (
+            query_context.search_text,
+            query_context.search_text,
+            query_context.search_text,
+            query_context.search_text,
+        ),
+    )
+
+    if query_context.compact_text:
+        exact_acronym_sql = (
+            base_select
+            + """
+              AND (title_acronym = ? OR slug_acronym = ?)
+            ORDER BY
+                CASE
+                    WHEN title_acronym = ? THEN 0
+                    WHEN slug_acronym = ? THEN 1
+                    ELSE 2
+                END,
+                """
+            + _candidate_row_order_clause(prefer_title=True)
+            + """
+            LIMIT ?
+            """
+        )
+        collect(
+            exact_acronym_sql,
+            (
+                query_context.compact_text,
+                query_context.compact_text,
+                query_context.compact_text,
+                query_context.compact_text,
+            ),
+        )
+
+        if len(query_context.compact_text) >= 2:
+            compact_upper_bound = _prefix_upper_bound(query_context.compact_text)
+            acronym_prefix_sql = (
+                base_select
+                + """
+                  AND (
+                        (title_acronym >= ? AND title_acronym < ?)
+                     OR (slug_acronym >= ? AND slug_acronym < ?)
+                  )
+                ORDER BY
+                    CASE
+                        WHEN title_acronym >= ? AND title_acronym < ? THEN 0
+                        WHEN slug_acronym >= ? AND slug_acronym < ? THEN 1
+                        ELSE 2
+                    END,
+                    """
+                + _candidate_row_order_clause(prefer_title=True)
+                + """
+                LIMIT ?
+                """
+            )
+            collect(
+                acronym_prefix_sql,
+                (
+                    query_context.compact_text,
+                    compact_upper_bound,
+                    query_context.compact_text,
+                    compact_upper_bound,
+                    query_context.compact_text,
+                    compact_upper_bound,
+                    query_context.compact_text,
+                    compact_upper_bound,
+                ),
+            )
+
+    prefix_upper_bound = _prefix_upper_bound(query_context.search_text)
+    text_prefix_sql = (
+        base_select
+        + """
+          AND (
+                (title_search_text >= ? AND title_search_text < ?)
+             OR (slug_search_text >= ? AND slug_search_text < ?)
+          )
+        ORDER BY
+            CASE
+                WHEN title_search_text >= ? AND title_search_text < ? THEN 0
+                WHEN slug_search_text >= ? AND slug_search_text < ? THEN 1
+                ELSE 2
+            END,
+            """
+        + _candidate_row_order_clause(prefer_title=True)
+        + """
+        LIMIT ?
+        """
+    )
+    collect(
+        text_prefix_sql,
+        (
+            query_context.search_text,
+            prefix_upper_bound,
+            query_context.search_text,
+            prefix_upper_bound,
+            query_context.search_text,
+            prefix_upper_bound,
+            query_context.search_text,
+            prefix_upper_bound,
+        ),
+    )
+
+    token_presence_clauses = [
+        "(instr(title_search_text, ?) > 0 OR instr(slug_search_text, ?) > 0)"
+        for _ in query_context.tokens
+    ]
+    score_parts = []
+    score_params: list[object] = []
+    where_params: list[object] = []
+    for token in query_context.tokens:
+        score_parts.extend(
+            (
+                "CASE WHEN instr(title_search_text, ?) > 0 THEN 2 ELSE 0 END",
+                "CASE WHEN instr(slug_search_text, ?) > 0 THEN 1 ELSE 0 END",
+            )
+        )
+        score_params.extend((token, token))
+        where_params.extend((token, token))
+
+    if token_presence_clauses:
+        token_score_expr = " + ".join(score_parts)
+        all_tokens_sql = (
+            """
+            SELECT slug, title, slug_search_text, title_search_text, slug_acronym, title_acronym
+            FROM (
+                SELECT
+                    slug, title, slug_search_text, title_search_text, slug_acronym, title_acronym,
+                    """
+            + token_score_expr
+            + """
+                    AS rough_score
+                FROM games
+                WHERE slug IS NOT NULL
+                  AND TRIM(slug) != ''
+                  AND """
+            + " AND ".join(token_presence_clauses)
+            + """
+            )
+            ORDER BY rough_score DESC,
+                     """
+            + _candidate_row_order_clause(prefer_title=True)
+            + """
+            LIMIT ?
+            """
+        )
+        collect(all_tokens_sql, tuple(score_params + where_params))
+
+        if len(query_context.tokens) > 1:
+            any_tokens_sql = (
+                """
+                SELECT slug, title, slug_search_text, title_search_text, slug_acronym, title_acronym
+                FROM (
+                    SELECT
+                        slug, title, slug_search_text, title_search_text, slug_acronym, title_acronym,
+                        """
+                + token_score_expr
+                + """
+                        AS rough_score
+                    FROM games
+                    WHERE slug IS NOT NULL
+                      AND TRIM(slug) != ''
+                      AND (
+                        """
+                + " OR ".join(token_presence_clauses)
+                + """
+                      )
+                )
+                ORDER BY rough_score DESC,
+                         """
+                + _candidate_row_order_clause(prefer_title=True)
+                + """
+                LIMIT ?
+                """
+            )
+            collect(any_tokens_sql, tuple(score_params + where_params))
+
+    return collected_rows
+
+
+def _query_slug_search_candidates(
+    conn: sqlite3.Connection,
+    *,
+    query: str | None = None,
+    limit: int | None = None,
+) -> list[SlugSearchCandidate]:
     try:
-        games_rows = conn.execute(
-            """
-            SELECT slug, title
-            FROM games
-            WHERE slug IS NOT NULL AND TRIM(slug) != ''
-            ORDER BY slug ASC
-            """
-        ).fetchall()
+        if query is not None:
+            normalized_query = str(query).strip()
+            if not normalized_query:
+                games_rows = []
+            else:
+                games_rows = _fetch_slug_search_rows(
+                    conn,
+                    normalized_query,
+                    limit=max(1, limit if limit is not None else SEARCH_SLUG_SHORTLIST_LIMIT),
+                )
+        else:
+            games_rows = conn.execute(
+                """
+                SELECT slug, title, slug_search_text, title_search_text, slug_acronym, title_acronym
+                FROM games
+                WHERE slug IS NOT NULL AND TRIM(slug) != ''
+                ORDER BY slug ASC
+                """
+            ).fetchall()
     except sqlite3.Error as exc:
         if "no such table" in str(exc).lower():
             games_rows = []
         else:
             raise
 
-    try:
-        slug_rows = conn.execute(
-            """
-            SELECT slug
-            FROM game_slugs
-            WHERE slug IS NOT NULL AND TRIM(slug) != ''
-            ORDER BY sitemap_url ASC, slug ASC
-            """
-        ).fetchall()
-    except sqlite3.Error as exc:
-        if "no such table" in str(exc).lower():
-            slug_rows = []
-        else:
-            raise
-
-    return _merge_slug_search_candidates(games_rows, slug_rows)
+    return _merge_slug_search_candidates(games_rows)
 
 
 def load_slug_search_candidates_from_db(
     db_path: str | Path,
-) -> list[tuple[str, str | None]]:
+    *,
+    query: str | None = None,
+    limit: int | None = None,
+) -> list[SlugSearchCandidate]:
     normalized_db_path = str(db_path).strip()
     if not normalized_db_path:
         return []
@@ -106,7 +363,7 @@ def load_slug_search_candidates_from_db(
 
     conn = sqlite3.connect(f"{db_file.resolve().as_uri()}?mode=ro", uri=True)
     try:
-        return _query_slug_search_candidates(conn)
+        return _query_slug_search_candidates(conn, query=query, limit=limit)
     finally:
         conn.close()
 
@@ -157,6 +414,15 @@ class SQLiteStorage:
                 """
                 CREATE TABLE IF NOT EXISTS games (
                     slug TEXT PRIMARY KEY,
+                    game_url TEXT,
+                    sitemap_url TEXT,
+                    discovered_at TEXT,
+                    last_seen_at TEXT,
+                    is_crawled INTEGER NOT NULL DEFAULT 0,
+                    slug_search_text TEXT NOT NULL DEFAULT '',
+                    title_search_text TEXT NOT NULL DEFAULT '',
+                    slug_acronym TEXT NOT NULL DEFAULT '',
+                    title_acronym TEXT NOT NULL DEFAULT '',
                     game_id INTEGER,
                     title TEXT,
                     platform TEXT,
@@ -172,14 +438,6 @@ class SQLiteStorage:
                     critic_summary_json TEXT,
                     user_summary_json TEXT,
                     scraped_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS game_slugs (
-                    slug TEXT PRIMARY KEY,
-                    game_url TEXT NOT NULL,
-                    sitemap_url TEXT NOT NULL,
-                    discovered_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS critic_reviews (
@@ -217,14 +475,59 @@ class SQLiteStorage:
                 CREATE INDEX IF NOT EXISTS idx_critic_reviews_slug
                     ON critic_reviews(slug);
 
-                CREATE INDEX IF NOT EXISTS idx_game_slugs_sitemap_url
-                    ON game_slugs(sitemap_url);
-
                 CREATE INDEX IF NOT EXISTS idx_user_reviews_slug
                     ON user_reviews(slug);
                 """
             )
+            self._ensure_column("games", "game_url", "TEXT")
+            self._ensure_column("games", "sitemap_url", "TEXT")
+            self._ensure_column("games", "discovered_at", "TEXT")
+            self._ensure_column("games", "last_seen_at", "TEXT")
+            self._ensure_column("games", "is_crawled", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("games", "slug_search_text", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("games", "title_search_text", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("games", "slug_acronym", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("games", "title_acronym", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("games", "cover_url", "TEXT")
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_games_sitemap_slug
+                    ON games(sitemap_url, slug)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_games_is_crawled_slug
+                    ON games(is_crawled, slug)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_games_slug_search_text
+                    ON games(slug_search_text)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_games_title_search_text
+                    ON games(title_search_text)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_games_slug_acronym
+                    ON games(slug_acronym)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_games_title_acronym
+                    ON games(title_acronym)
+                """
+            )
+            self._migrate_legacy_sync_state_keys()
+            self._mark_existing_games_as_crawled()
+            self._backfill_slug_search_fields()
             self.conn.commit()
 
     def _ensure_column(self, table_name: str, column_name: str, column_type: str) -> None:
@@ -233,6 +536,109 @@ class SQLiteStorage:
         if column_name in existing_columns:
             return
         self.conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+    def _mark_existing_games_as_crawled(self) -> None:
+        self.conn.execute(
+            """
+            UPDATE games
+            SET is_crawled = 1
+            WHERE COALESCE(is_crawled, 0) = 0
+              AND product_json IS NOT NULL
+              AND TRIM(product_json) NOT IN ('', '{}')
+            """
+        )
+
+    def _backfill_slug_search_fields(self) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT slug, title
+            FROM games
+            WHERE slug IS NOT NULL
+              AND TRIM(slug) != ''
+              AND (
+                    COALESCE(TRIM(slug_search_text), '') = ''
+                 OR COALESCE(TRIM(slug_acronym), '') = ''
+                 OR (
+                        COALESCE(TRIM(title), '') = ''
+                    AND (
+                            COALESCE(TRIM(title_search_text), '') != ''
+                         OR COALESCE(TRIM(title_acronym), '') != ''
+                    )
+                 )
+                 OR (
+                        COALESCE(TRIM(title), '') != ''
+                    AND (
+                            COALESCE(TRIM(title_search_text), '') = ''
+                         OR COALESCE(TRIM(title_acronym), '') = ''
+                    )
+                 )
+              )
+            """
+        ).fetchall()
+        if not rows:
+            return
+
+        updates = []
+        for slug, title in rows:
+            search_fields = compute_slug_search_fields(
+                slug=str(slug),
+                title=str(title).strip() if title is not None else None,
+            )
+            updates.append(
+                {
+                    "slug": str(slug),
+                    **search_fields,
+                }
+            )
+
+        self.conn.executemany(
+            """
+            UPDATE games
+            SET slug_search_text = :slug_search_text,
+                title_search_text = :title_search_text,
+                slug_acronym = :slug_acronym,
+                title_acronym = :title_acronym
+            WHERE slug = :slug
+            """,
+            updates,
+        )
+
+    def _migrate_legacy_sync_state_keys(self) -> None:
+        legacy_row = self.conn.execute(
+            """
+            SELECT state_value, updated_at
+            FROM sync_state
+            WHERE state_key = ?
+            """,
+            (LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,),
+        ).fetchone()
+        if legacy_row is None:
+            return
+
+        existing_new_row = self.conn.execute(
+            """
+            SELECT 1
+            FROM sync_state
+            WHERE state_key = ?
+            """,
+            (SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,),
+        ).fetchone()
+        if existing_new_row is None:
+            self.conn.execute(
+                """
+                INSERT INTO sync_state (state_key, state_value, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,
+                    str(legacy_row[0]),
+                    str(legacy_row[1]),
+                ),
+            )
+        self.conn.execute(
+            "DELETE FROM sync_state WHERE state_key = ?",
+            (LEGACY_SLUG_INDEX_LAST_FULL_SYNC_AT_STATE_KEY,),
+        )
 
     def upsert_game(
         self,
@@ -243,9 +649,14 @@ class SQLiteStorage:
         user_summary_payload: dict | None,
         cover_url: str | None = None,
     ) -> None:
+        normalized_slug = str(slug).strip()
         item = product_payload.get("data", {}).get("item", {})
         critic_summary_item = (critic_summary_payload or {}).get("data", {}).get("item", {})
         user_summary_item = (user_summary_payload or {}).get("data", {}).get("item", {})
+        search_fields = compute_slug_search_fields(
+            slug=normalized_slug,
+            title=item.get("title"),
+        )
 
         critic_score = critic_summary_item.get("score")
         critic_review_count = (
@@ -264,15 +675,22 @@ class SQLiteStorage:
             self.conn.execute(
                 """
                 INSERT INTO games (
-                    slug, game_id, title, platform, release_date, premiere_year, rating,
+                    slug, is_crawled, slug_search_text, title_search_text, slug_acronym, title_acronym,
+                    game_id, title, platform, release_date, premiere_year, rating,
                     critic_score, critic_review_count, user_score, user_review_count, cover_url,
                     product_json, critic_summary_json, user_summary_json, scraped_at
                 ) VALUES (
-                    :slug, :game_id, :title, :platform, :release_date, :premiere_year, :rating,
+                    :slug, :is_crawled, :slug_search_text, :title_search_text, :slug_acronym, :title_acronym,
+                    :game_id, :title, :platform, :release_date, :premiere_year, :rating,
                     :critic_score, :critic_review_count, :user_score, :user_review_count, :cover_url,
                     :product_json, :critic_summary_json, :user_summary_json, :scraped_at
                 )
                 ON CONFLICT(slug) DO UPDATE SET
+                    is_crawled=excluded.is_crawled,
+                    slug_search_text=excluded.slug_search_text,
+                    title_search_text=excluded.title_search_text,
+                    slug_acronym=excluded.slug_acronym,
+                    title_acronym=excluded.title_acronym,
                     game_id=excluded.game_id,
                     title=excluded.title,
                     platform=excluded.platform,
@@ -290,7 +708,9 @@ class SQLiteStorage:
                     scraped_at=excluded.scraped_at
                 """,
                 {
-                    "slug": slug,
+                    "slug": normalized_slug,
+                    "is_crawled": 1,
+                    **search_fields,
                     "game_id": item.get("id"),
                     "title": item.get("title"),
                     "platform": item.get("platform"),
@@ -397,19 +817,21 @@ class SQLiteStorage:
             self.conn.commit()
         return len(rows)
 
-    def upsert_game_slugs(self, game_slugs: Iterable[tuple[str, str, str]]) -> tuple[int, int, int]:
+    def upsert_indexed_slugs(self, indexed_slugs: Iterable[tuple[str, str, str]]) -> tuple[int, int, int]:
         now = _utc_now_iso()
         row_by_slug: dict[str, dict[str, str]] = {}
-        for slug, game_url, sitemap_url in game_slugs:
+        for slug, game_url, sitemap_url in indexed_slugs:
             normalized_slug = str(slug).strip()
             if not normalized_slug:
                 continue
+            search_fields = compute_slug_search_fields(slug=normalized_slug, title=None)
             row_by_slug[normalized_slug] = {
                 "slug": normalized_slug,
                 "game_url": str(game_url),
                 "sitemap_url": str(sitemap_url),
                 "discovered_at": now,
                 "last_seen_at": now,
+                **search_fields,
             }
 
         rows = list(row_by_slug.values())
@@ -419,23 +841,28 @@ class SQLiteStorage:
         placeholders = ",".join("?" for _ in rows)
         with self._lock:
             cursor = self.conn.execute(
-                f"SELECT slug FROM game_slugs WHERE slug IN ({placeholders})",
+                f"SELECT slug FROM games WHERE slug IN ({placeholders})",
                 tuple(row["slug"] for row in rows),
             )
             existing_slugs = {str(row[0]) for row in cursor.fetchall()}
             self.conn.executemany(
                 """
-                INSERT INTO game_slugs (
-                    slug, game_url, sitemap_url, discovered_at, last_seen_at
+                INSERT INTO games (
+                    slug, game_url, sitemap_url, discovered_at, last_seen_at, is_crawled,
+                    slug_search_text, title_search_text, slug_acronym, title_acronym, product_json, scraped_at
                 ) VALUES (
-                    :slug, :game_url, :sitemap_url, :discovered_at, :last_seen_at
+                    :slug, :game_url, :sitemap_url, :discovered_at, :last_seen_at, 0,
+                    :slug_search_text, :title_search_text, :slug_acronym, :title_acronym, '{}', :scraped_at
                 )
                 ON CONFLICT(slug) DO UPDATE SET
                     game_url=excluded.game_url,
                     sitemap_url=excluded.sitemap_url,
+                    slug_search_text=excluded.slug_search_text,
+                    slug_acronym=excluded.slug_acronym,
+                    discovered_at=COALESCE(games.discovered_at, excluded.discovered_at),
                     last_seen_at=excluded.last_seen_at
                 """,
-                rows,
+                [{**row, "scraped_at": now} for row in rows],
             )
             self.conn.commit()
 
@@ -443,18 +870,22 @@ class SQLiteStorage:
         updated = len(rows) - inserted
         return len(rows), inserted, updated
 
-    def list_game_slugs(
+    def list_indexed_slugs(
         self,
     ) -> list[str]:
-        query = "SELECT slug FROM game_slugs"
-        query += " ORDER BY sitemap_url ASC, slug ASC"
+        query = """
+            SELECT slug
+            FROM games
+            WHERE sitemap_url IS NOT NULL AND TRIM(sitemap_url) != ''
+            ORDER BY sitemap_url ASC, slug ASC
+        """
 
         with self._lock:
             cursor = self.conn.execute(query)
             rows = cursor.fetchall()
         return [str(row[0]) for row in rows]
 
-    def list_crawled_game_slugs(
+    def list_crawled_slugs(
         self,
         *,
         slug: str | None = None,
@@ -464,6 +895,7 @@ class SQLiteStorage:
             SELECT slug
             FROM games
             WHERE slug IS NOT NULL AND TRIM(slug) != ''
+              AND is_crawled = 1
         """
         if slug is not None:
             normalized_slug = slug.strip()
@@ -480,13 +912,38 @@ class SQLiteStorage:
 
     def list_slug_search_candidates(
         self,
-    ) -> list[tuple[str, str | None]]:
+        *,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> list[SlugSearchCandidate]:
         with self._lock:
-            return _query_slug_search_candidates(self.conn)
+            return _query_slug_search_candidates(self.conn, query=query, limit=limit)
 
     def count_rows(self, table_name: str) -> int:
         with self._lock:
             cursor = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+            return int(cursor.fetchone()[0])
+
+    def count_indexed_slugs(self) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM games
+                WHERE sitemap_url IS NOT NULL AND TRIM(sitemap_url) != ''
+                """
+            )
+            return int(cursor.fetchone()[0])
+
+    def count_crawled_games(self) -> int:
+        with self._lock:
+            cursor = self.conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM games
+                WHERE is_crawled = 1
+                """
+            )
             return int(cursor.fetchone()[0])
 
     def clear_all_tables(self) -> dict[str, int]:
@@ -534,6 +991,10 @@ class SQLiteStorage:
                 """
                 SELECT
                     slug,
+                    game_url,
+                    sitemap_url,
+                    discovered_at,
+                    last_seen_at,
                     game_id,
                     title,
                     platform,
@@ -551,6 +1012,7 @@ class SQLiteStorage:
                     scraped_at
                 FROM games
                 WHERE slug = ?
+                  AND is_crawled = 1
                 """,
                 (normalized_slug,),
             ).fetchone()
@@ -560,21 +1022,25 @@ class SQLiteStorage:
 
         return {
             "slug": str(row[0]),
-            "game_id": row[1],
-            "title": row[2],
-            "platform": row[3],
-            "release_date": row[4],
-            "premiere_year": row[5],
-            "rating": row[6],
-            "critic_score": row[7],
-            "critic_review_count": row[8],
-            "user_score": row[9],
-            "user_review_count": row[10],
-            "cover_url": row[11],
-            "product": _json_loads(row[12]),
-            "critic_summary": _json_loads(row[13]),
-            "user_summary": _json_loads(row[14]),
-            "scraped_at": row[15],
+            "game_url": row[1],
+            "sitemap_url": row[2],
+            "discovered_at": row[3],
+            "last_seen_at": row[4],
+            "game_id": row[5],
+            "title": row[6],
+            "platform": row[7],
+            "release_date": row[8],
+            "premiere_year": row[9],
+            "rating": row[10],
+            "critic_score": row[11],
+            "critic_review_count": row[12],
+            "user_score": row[13],
+            "user_review_count": row[14],
+            "cover_url": row[15],
+            "product": _json_loads(row[16]),
+            "critic_summary": _json_loads(row[17]),
+            "user_summary": _json_loads(row[18]),
+            "scraped_at": row[19],
         }
 
     def list_critic_review_payloads(

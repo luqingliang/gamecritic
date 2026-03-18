@@ -335,7 +335,7 @@ class WebServiceApiTestCase(unittest.TestCase):
                     user_summary_payload=None,
                     cover_url=None,
                 )
-                storage.upsert_game_slugs(
+                storage.upsert_indexed_slugs(
                     [
                         (
                             "metaphor-refantazio",
@@ -544,7 +544,7 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["data"]["slug"], "demo-game")
-        self.assertTrue(payload["data"]["game_auto_crawled"])
+        self.assertFalse(payload["data"]["game_auto_crawled"])
         self.assertEqual(payload["data"]["counts"]["critic_reviews"], 1)
         self.assertEqual(payload["data"]["counts"]["user_reviews"], 1)
         self.assertEqual(len(critic_reviews), 1)
