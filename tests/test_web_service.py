@@ -233,6 +233,68 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(payload["data"]["title"], "Demo Game")
         self.assertFalse(payload["data"]["auto_crawled"])
 
+    def test_game_endpoint_refreshes_stale_cached_game_before_returning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="demo-game",
+                    product_payload={"data": {"item": {"id": 1, "title": "Old Demo Game", "platform": "PC"}}},
+                    critic_summary_payload={"data": {"item": {"score": 70, "reviewCount": 5}}},
+                    user_summary_payload={"data": {"item": {"score": 7.0, "reviewCount": 12}}},
+                    cover_url=None,
+                )
+                storage.conn.execute(
+                    "UPDATE games SET scraped_at = ? WHERE slug = ?",
+                    ("2026-01-01T00:00:00+00:00", "demo-game"),
+                )
+                storage.conn.commit()
+            finally:
+                storage.close()
+
+            def _client_factory() -> _FakeWebServiceClient:
+                return _FakeWebServiceClient(
+                    products={
+                        "demo-game": {
+                            "data": {
+                                "item": {
+                                    "id": 7,
+                                    "title": "Demo Game Refreshed",
+                                    "platform": "PC",
+                                    "releaseDate": "2026-03-16",
+                                    "premiereYear": 2026,
+                                    "rating": "T",
+                                }
+                            }
+                        }
+                    },
+                    critic_summaries={"demo-game": {"data": {"item": {"score": 90, "reviewCount": 10}}}},
+                    user_summaries={"demo-game": {"data": {"item": {"score": 8.7, "reviewCount": 20}}}},
+                )
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=_client_factory,
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/game?slug=demo-game")
+            finally:
+                service.close()
+
+            storage = SQLiteStorage(db_path)
+            try:
+                game = storage.get_game("demo-game")
+            finally:
+                storage.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["data"]["auto_crawled"])
+        self.assertEqual(payload["data"]["title"], "Demo Game Refreshed")
+        self.assertIsNotNone(game)
+        self.assertEqual(game["title"], "Demo Game Refreshed")
+
     def test_game_endpoint_crawls_and_persists_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -581,6 +643,185 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertFalse(payload["ok"])
         self.assertIn("critic", payload["error"])
+
+    def test_reviews_endpoint_returns_cached_reviews_without_crawling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="demo-game",
+                    product_payload={"data": {"item": {"id": 1, "title": "Demo Game", "platform": "PC"}}},
+                    critic_summary_payload={"data": {"item": {"score": 90, "reviewCount": 1}}},
+                    user_summary_payload={"data": {"item": {"score": 8.7, "reviewCount": 1}}},
+                    cover_url=None,
+                )
+                storage.upsert_critic_reviews(
+                    "demo-game",
+                    [
+                        {
+                            "publicationSlug": "demo-pub",
+                            "publicationName": "Demo Pub",
+                            "date": "2026-03-16",
+                            "score": 80,
+                            "url": "https://example.com/critic-review",
+                            "quote": "Great game.",
+                            "author": "Critic A",
+                        }
+                    ],
+                )
+                storage.upsert_user_reviews(
+                    "demo-game",
+                    [
+                        {
+                            "id": "user-1",
+                            "author": "User A",
+                            "date": "2026-03-16",
+                            "score": 9,
+                            "quote": "Loved it.",
+                            "spoiler": False,
+                        }
+                    ],
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/reviews?slug=demo-game")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["data"]["game_auto_crawled"])
+        self.assertEqual(payload["data"]["counts"]["critic_reviews"], 1)
+        self.assertEqual(payload["data"]["counts"]["user_reviews"], 1)
+
+    def test_reviews_endpoint_refreshes_stale_cached_reviews_before_returning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="demo-game",
+                    product_payload={"data": {"item": {"id": 1, "title": "Demo Game", "platform": "PC"}}},
+                    critic_summary_payload={"data": {"item": {"score": 90, "reviewCount": 1}}},
+                    user_summary_payload={"data": {"item": {"score": 8.7, "reviewCount": 1}}},
+                    cover_url=None,
+                )
+                storage.upsert_critic_reviews(
+                    "demo-game",
+                    [
+                        {
+                            "publicationSlug": "demo-pub",
+                            "publicationName": "Old Demo Pub",
+                            "date": "2026-01-10",
+                            "score": 70,
+                            "url": "https://example.com/old-critic-review",
+                            "quote": "Old quote.",
+                            "author": "Critic A",
+                        }
+                    ],
+                )
+                storage.upsert_user_reviews(
+                    "demo-game",
+                    [
+                        {
+                            "id": "user-1",
+                            "author": "User A",
+                            "date": "2026-01-10",
+                            "score": 7,
+                            "quote": "Old user quote.",
+                            "spoiler": False,
+                        }
+                    ],
+                )
+                storage.conn.execute(
+                    "UPDATE critic_reviews SET scraped_at = ? WHERE slug = ?",
+                    ("2026-01-10T00:00:00+00:00", "demo-game"),
+                )
+                storage.conn.execute(
+                    "UPDATE user_reviews SET scraped_at = ? WHERE slug = ?",
+                    ("2026-01-10T00:00:00+00:00", "demo-game"),
+                )
+                storage.conn.commit()
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _FakeWebServiceClient(
+                    critic_reviews={
+                        "demo-game": [
+                            {
+                                "publicationSlug": "demo-pub",
+                                "publicationName": "New Demo Pub",
+                                "date": "2026-03-16",
+                                "score": 85,
+                                "url": "https://example.com/new-critic-review",
+                                "quote": "New quote.",
+                                "author": "Critic A",
+                            }
+                        ]
+                    },
+                    user_reviews={
+                        "demo-game": [
+                            {
+                                "id": "user-1",
+                                "author": "User A",
+                                "date": "2026-03-16",
+                                "score": 9,
+                                "quote": "New user quote.",
+                                "spoiler": False,
+                            }
+                        ]
+                    },
+                ),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/reviews?slug=demo-game")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["critic_reviews"][0]["publicationName"], "New Demo Pub")
+        self.assertEqual(payload["data"]["user_reviews"][0]["quote"], "New user quote.")
+
+    def test_reviews_endpoint_returns_empty_cached_response_when_game_summary_counts_are_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="demo-game",
+                    product_payload={"data": {"item": {"id": 1, "title": "Demo Game", "platform": "PC"}}},
+                    critic_summary_payload={"data": {"item": {"score": None, "reviewCount": 0}}},
+                    user_summary_payload={"data": {"item": {"score": None, "reviewCount": 0}}},
+                    cover_url=None,
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/api/reviews?slug=demo-game")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["counts"]["critic_reviews"], 0)
+        self.assertEqual(payload["data"]["counts"]["user_reviews"], 0)
+        self.assertEqual(payload["data"]["critic_reviews"], [])
+        self.assertEqual(payload["data"]["user_reviews"], [])
 
     def test_service_shutdown_sets_stop_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

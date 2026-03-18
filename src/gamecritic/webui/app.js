@@ -26,8 +26,6 @@ const COPY = {
     emptyCopy: "输入游戏名，系统会先从本地索引匹配最接近的游戏，再获取基础信息和评论数据。",
     noCover: "暂无封面",
     profileKicker: "游戏档案",
-    dataSourceCached: "命中本地缓存",
-    dataSourceAutoCrawled: "本次请求触发抓取",
     labelPlatform: "平台",
     labelRelease: "发售时间",
     labelRating: "评级",
@@ -42,13 +40,6 @@ const COPY = {
     tabUser: "用户评论",
     criticMore: "加载更多媒体评论",
     userMore: "加载更多用户评论",
-    technicalSummary: "技术信息",
-    techSlug: "slug",
-    techSource: "数据来源",
-    techCriticTotal: "媒体评论数量",
-    techUserTotal: "用户评论数量",
-    techSourceCached: "直接读取现有数据库",
-    techSourceAutoCrawled: "接口触发抓取后落库",
     reviewCount: ({ count }) => `${count} 条评论`,
     unknownCritic: "未知媒体",
     unknownPlayer: "未知玩家",
@@ -88,8 +79,6 @@ const COPY = {
     emptyCopy: "Enter a game title to match against the local index, then load the game profile and reviews.",
     noCover: "NO COVER",
     profileKicker: "GAME PROFILE",
-    dataSourceCached: "Local cache",
-    dataSourceAutoCrawled: "Fetched on demand",
     labelPlatform: "Platform",
     labelRelease: "Release date",
     labelRating: "Rating",
@@ -104,13 +93,6 @@ const COPY = {
     tabUser: "User reviews",
     criticMore: "Load more critic reviews",
     userMore: "Load more user reviews",
-    technicalSummary: "Technical info",
-    techSlug: "Slug",
-    techSource: "Data source",
-    techCriticTotal: "Critic review count",
-    techUserTotal: "User review count",
-    techSourceCached: "Read directly from the local database",
-    techSourceAutoCrawled: "Fetched and stored by the API request",
     reviewCount: ({ count }) => `${count} review${count === 1 ? "" : "s"}`,
     unknownCritic: "Unknown critic",
     unknownPlayer: "Unknown player",
@@ -177,7 +159,6 @@ const elements = {
   gameRelease: document.getElementById("game-release"),
   gameRating: document.getElementById("game-rating"),
   gameScrapedAt: document.getElementById("game-scraped-at"),
-  dataSourceBadge: document.getElementById("data-source-badge"),
   labelPlatform: document.getElementById("label-platform"),
   labelRelease: document.getElementById("label-release"),
   labelRating: document.getElementById("label-rating"),
@@ -197,15 +178,6 @@ const elements = {
   userPanel: document.getElementById("user-panel"),
   criticMore: document.getElementById("critic-more"),
   userMore: document.getElementById("user-more"),
-  technicalSummary: document.getElementById("technical-summary"),
-  techSlug: document.getElementById("tech-slug"),
-  techSource: document.getElementById("tech-source"),
-  techCriticTotal: document.getElementById("tech-critic-total"),
-  techUserTotal: document.getElementById("tech-user-total"),
-  labelTechSlug: document.getElementById("label-tech-slug"),
-  labelTechSource: document.getElementById("label-tech-source"),
-  labelTechCriticTotal: document.getElementById("label-tech-critic-total"),
-  labelTechUserTotal: document.getElementById("label-tech-user-total"),
 };
 
 function loadSavedLocale() {
@@ -574,13 +546,10 @@ function renderGame() {
   elements.gameRelease.textContent = game.release_date || "-";
   elements.gameRating.textContent = game.rating || "-";
   elements.gameScrapedAt.textContent = formatDate(game.scraped_at);
-  elements.dataSourceBadge.textContent = game.auto_crawled ? t("dataSourceAutoCrawled") : t("dataSourceCached");
   elements.criticScore.textContent = scoreText(game.critic_score);
   elements.criticCount.textContent = countText(game.critic_review_count);
   elements.userScore.textContent = scoreText(game.user_score);
   elements.userCount.textContent = countText(game.user_review_count);
-  elements.techSlug.textContent = game.slug || "-";
-  elements.techSource.textContent = game.auto_crawled ? t("techSourceAutoCrawled") : t("techSourceCached");
 
   if (game.cover_url) {
     elements.coverImage.src = game.cover_url;
@@ -642,8 +611,6 @@ function renderReviews() {
 
   elements.criticPanel.innerHTML = renderReviewCards(criticReviews, "critic", state.visibleCritic);
   elements.userPanel.innerHTML = renderReviewCards(userReviews, "user", state.visibleUser);
-  elements.techCriticTotal.textContent = String(criticCount);
-  elements.techUserTotal.textContent = String(userCount);
 
   elements.criticMore.classList.toggle("hidden", criticReviews.length <= state.visibleCritic);
   elements.userMore.classList.toggle("hidden", userReviews.length <= state.visibleUser);
@@ -711,11 +678,6 @@ function applyLocale() {
   elements.tabUser.textContent = t("tabUser");
   elements.criticMore.textContent = t("criticMore");
   elements.userMore.textContent = t("userMore");
-  elements.technicalSummary.textContent = t("technicalSummary");
-  elements.labelTechSlug.textContent = t("techSlug");
-  elements.labelTechSource.textContent = t("techSource");
-  elements.labelTechCriticTotal.textContent = t("techCriticTotal");
-  elements.labelTechUserTotal.textContent = t("techUserTotal");
 
   setLoading(state.isBusy);
   renderRecentGames();

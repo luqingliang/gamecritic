@@ -167,7 +167,6 @@ input {
 .status-card,
 .game-card,
 .reviews-panel,
-.technical-panel,
 .empty-state {
   background: var(--panel);
   backdrop-filter: blur(14px);
@@ -273,8 +272,7 @@ input {
 .status-card,
 .empty-state,
 .game-card,
-.reviews-panel,
-.technical-panel {
+.reviews-panel {
   padding: 22px;
 }
 
@@ -531,19 +529,8 @@ input {
   line-height: 0.98;
 }
 
-.data-source-badge {
-  padding: 10px 14px;
-  border-radius: 999px;
-  background: rgba(117, 143, 52, 0.16);
-  color: #3d4f10;
-  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
-  font-size: 0.9rem;
-  white-space: nowrap;
-}
-
 .facts-grid,
-.score-grid,
-.technical-grid {
+.score-grid {
   display: grid;
   gap: 14px;
 }
@@ -553,22 +540,19 @@ input {
   margin: 0;
 }
 
-.fact,
-.technical-grid > div {
+.fact {
   padding: 16px;
   border-radius: var(--radius-md);
   background: var(--panel-strong);
   border: 1px solid rgba(25, 22, 18, 0.06);
 }
 
-.fact dt,
-.technical-grid dt {
+.fact dt {
   font-size: 0.85rem;
   color: var(--muted);
 }
 
-.fact dd,
-.technical-grid dd {
+.fact dd {
   margin: 8px 0 0;
   font-size: 1.06rem;
 }
@@ -707,22 +691,6 @@ input {
   color: var(--ink);
 }
 
-.technical-panel {
-  color: var(--muted);
-}
-
-.technical-panel summary {
-  cursor: pointer;
-  color: var(--ink);
-  font-family: "Trebuchet MS", "Gill Sans", "Avenir Next Condensed", sans-serif;
-  letter-spacing: 0.04em;
-}
-
-.technical-grid {
-  margin-top: 16px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
 .hidden {
   display: none !important;
 }
@@ -752,7 +720,6 @@ input {
   .status-card,
   .game-card,
   .reviews-panel,
-  .technical-panel,
   .empty-state {
     border-radius: 24px;
   }
@@ -763,8 +730,7 @@ input {
   .lookup-form,
   .status-card,
   .game-card,
-  .reviews-panel,
-  .technical-panel {
+  .reviews-panel {
     padding: 18px;
   }
 
