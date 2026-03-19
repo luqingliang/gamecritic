@@ -262,7 +262,7 @@ class FullCrawlSourceTestCase(unittest.TestCase):
     def test_crawl_reviews_for_slug_fetches_reviews_without_product_request(self) -> None:
         class _ClientReviewsOnly:
             def __init__(self) -> None:
-                self.review_calls: list[str] = []
+                self.review_calls: list[tuple[str, int | None]] = []
 
             def iter_reviews(
                 self,
@@ -272,8 +272,8 @@ class FullCrawlSourceTestCase(unittest.TestCase):
                 page_size: int = 50,
                 max_pages: int | None = None,
             ):
-                del slug, page_size, max_pages
-                self.review_calls.append(review_type)
+                del slug, page_size
+                self.review_calls.append((review_type, max_pages))
                 if review_type == "critic":
                     yield {
                         "publicationSlug": "edge",
@@ -298,7 +298,8 @@ class FullCrawlSourceTestCase(unittest.TestCase):
             db_path = Path(tmpdir) / "test.db"
             storage = SQLiteStorage(db_path)
             try:
-                scraper = MetacriticScraper(_ClientReviewsOnly(), storage)
+                client = _ClientReviewsOnly()
+                scraper = MetacriticScraper(client, storage)
                 result = scraper.crawl_reviews_for_slug(
                     "reviews-only",
                     include_critic_reviews=True,
@@ -310,6 +311,7 @@ class FullCrawlSourceTestCase(unittest.TestCase):
                 self.assertEqual(result.games_crawled, 0)
                 self.assertEqual(result.critic_reviews_saved, 1)
                 self.assertEqual(result.user_reviews_saved, 1)
+                self.assertEqual(client.review_calls, [("critic", None), ("user", 1)])
                 self.assertEqual(storage.count_rows("critic_reviews"), 1)
                 self.assertEqual(storage.count_rows("user_reviews"), 1)
             finally:

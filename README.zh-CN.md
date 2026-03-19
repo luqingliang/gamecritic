@@ -57,7 +57,7 @@ gamecritic
   // 每页请求的评论条数
   "review_page_size": 50,
 
-  // 每个游戏最多抓取的评论页数
+  // 每个游戏的用户评论最多抓取页数
   "max_review_pages": 1,
 
   // 批量抓取任务的并发 worker 数

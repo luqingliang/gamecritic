@@ -311,7 +311,7 @@ class MetacriticScraper:
                     slug=slug,
                     review_type="critic",
                     page_size=review_page_size,
-                    max_pages=max_review_pages,
+                    max_pages=None,
                 ):
                     self._check_stopped()
                     critic_buffer.append(review)

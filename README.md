@@ -59,7 +59,7 @@ Parameter reference:
   // Number of reviews requested per page
   "review_page_size": 50,
 
-  // Maximum review pages fetched per game
+  // Maximum user-review pages fetched per game
   "max_review_pages": 1,
 
   // Number of concurrent workers for batch crawl tasks
