@@ -18,6 +18,7 @@ from .storage import SQLiteStorage
 logger = logging.getLogger(__name__)
 WEBUI_DIR = Path(__file__).with_name("webui")
 GAME_REFRESH_MAX_AGE = timedelta(days=30)
+WEB_BASE_PATH = "/gamecritic"
 STATIC_FILE_ROUTES = {
     "/static/app.css": ("app.css", "text/css; charset=utf-8"),
     "/static/app.js": ("app.js", "application/javascript; charset=utf-8"),
@@ -92,10 +93,26 @@ def _normalize_search_query(value: str) -> str:
     return normalized
 
 
+def _request_base_path(path: str) -> str:
+    normalized = str(path or "").rstrip("/") or "/"
+    if normalized == WEB_BASE_PATH or normalized.startswith(f"{WEB_BASE_PATH}/"):
+        return WEB_BASE_PATH
+    return ""
+
+
+def _strip_base_path(path: str) -> str:
+    base_path = _request_base_path(path)
+    if not base_path:
+        return path
+    stripped = path[len(base_path):]
+    return stripped or "/"
+
+
 def _request_route_and_value(path: str) -> tuple[str, str | None]:
     parsed = urlsplit(path)
     query = parse_qs(parsed.query, keep_blank_values=True)
-    normalized_path = parsed.path.rstrip("/") or "/"
+    normalized_path = _strip_base_path(parsed.path).rstrip("/") or "/"
+    normalized_parts = [part for part in normalized_path.split("/") if part]
 
     if normalized_path == "/":
         return "index", None
@@ -106,13 +123,12 @@ def _request_route_and_value(path: str) -> tuple[str, str | None]:
     if normalized_path == "/api/reviews":
         return "reviews", _normalize_slug(query.get("slug", [""])[0])
 
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) == 3 and parts[:2] == ["api", "search"]:
-        return "search", _normalize_search_query(unquote(parts[2]))
-    if len(parts) == 3 and parts[:2] == ["api", "games"]:
-        return "game", _normalize_slug(unquote(parts[2]))
-    if len(parts) == 4 and parts[:2] == ["api", "games"] and parts[3] == "reviews":
-        return "reviews", _normalize_slug(unquote(parts[2]))
+    if len(normalized_parts) == 3 and normalized_parts[:2] == ["api", "search"]:
+        return "search", _normalize_search_query(unquote(normalized_parts[2]))
+    if len(normalized_parts) == 3 and normalized_parts[:2] == ["api", "games"]:
+        return "game", _normalize_slug(unquote(normalized_parts[2]))
+    if len(normalized_parts) == 4 and normalized_parts[:2] == ["api", "games"] and normalized_parts[3] == "reviews":
+        return "reviews", _normalize_slug(unquote(normalized_parts[2]))
 
     raise WebServiceError(HTTPStatus.NOT_FOUND, f"unknown endpoint: {parsed.path}")
 
@@ -199,7 +215,7 @@ class GamecriticWebService:
 
     def handle_get(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urlsplit(handler.path)
-        if parsed.path.startswith("/api/"):
+        if _strip_base_path(parsed.path).startswith("/api/"):
             status, payload = self.dispatch_path(handler.path)
             _write_json_response(
                 handler,
@@ -218,10 +234,11 @@ class GamecriticWebService:
 
     def dispatch_frontend_path(self, path: str) -> tuple[int, str, bytes]:
         parsed = urlsplit(path)
-        normalized_path = parsed.path.rstrip("/") or "/"
+        base_path = _request_base_path(parsed.path)
+        normalized_path = _strip_base_path(parsed.path).rstrip("/") or "/"
 
         if normalized_path == "/" or normalized_path.startswith("/game/"):
-            return HTTPStatus.OK, "text/html; charset=utf-8", self._read_webui_file("index.html")
+            return HTTPStatus.OK, "text/html; charset=utf-8", self._render_index_html(base_path)
 
         route = STATIC_FILE_ROUTES.get(normalized_path)
         if route is not None:
@@ -233,6 +250,11 @@ class GamecriticWebService:
     @staticmethod
     def _read_webui_file(filename: str) -> bytes:
         return (WEBUI_DIR / filename).read_bytes()
+
+    @staticmethod
+    def _render_index_html(base_path: str) -> bytes:
+        html = (WEBUI_DIR / "index.html").read_text(encoding="utf-8")
+        return html.replace("__GAMECRITIC_BASE_PATH_VALUE__", base_path).encode("utf-8")
 
     def _get_or_crawl_game(self, slug: str) -> dict[str, Any]:
         game = self._storage.get_game(slug)

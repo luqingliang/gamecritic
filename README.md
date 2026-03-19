@@ -2,6 +2,11 @@
 
 [中文说明](./README.zh-CN.md)
 
+## Live Demos
+
+- [Web Demo](http://43.134.29.182/gamecritic)
+- [Telegram Bot Demo](https://t.me/gamecritic_bot)
+
 Python crawler for Metacritic game data, focused on:
 
 - game discovery from the official games sitemap
@@ -92,6 +97,38 @@ Parameter reference:
 }
 ```
 
+## Telegram Bot Settings
+
+`config/bot_settings.json` is the dedicated settings profile for the Telegram bot launched by
+`gamecritic serve`.
+`bot_token` must be configured in this file. If it is missing or rejected by Telegram, the
+bot is skipped with a warning and the web service still starts normally.
+
+```jsonc
+{
+  // Base URL of the local gamecritic HTTP API
+  "backend_base_url": "http://127.0.0.1:8000",
+
+  // Telegram bot token
+  "bot_token": "",
+
+  // Telegram Bot API base URL
+  "telegram_api_base_url": "https://api.telegram.org",
+
+  // Long-poll timeout in seconds
+  "poll_timeout": 30,
+
+  // HTTP timeout in seconds for both Telegram and backend API calls
+  "request_timeout": 30.0,
+
+  // Number of critic reviews shown per Telegram page
+  "critic_reviews_per_page": 5,
+
+  // Max search-result buttons shown to the user
+  "search_result_limit": 8
+}
+```
+
 ## Common Commands
 
 ```bash
@@ -123,6 +160,7 @@ gamecritic download-covers the-legend-of-zelda-breath-of-the-wild
 gamecritic export-excel
 
 # Start the HTTP API service
+# When bot_settings.json is valid, this also starts the Telegram bot
 gamecritic serve
 
 # Clear all project tables while keeping the schema
@@ -154,12 +192,29 @@ Path-style variants:
 - `GET /api/games/<slug>`
 - `GET /api/games/<slug>/reviews`
 
+## Telegram Bot
+
+The Telegram bot is a thin client around the local HTTP API and is started together with
+`gamecritic serve` when `config/bot_settings.json` is valid:
+
+```bash
+gamecritic serve
+```
+
+Current bot MVP supports:
+
+- Sending a game name to search the local index
+- Inline-button selection for ambiguous matches
+- One-game detail messages
+- Critic-review pagination only
+
+The bot currently does not expose user-review browsing.
+
 ## Data Schema
 
 SQLite tables:
 
-- `games`: Stores crawled game metadata, score summaries, cover URL, and raw product/summary JSON snapshots.
-- `games`: Stores both the sitemap-derived slug index and crawled game metadata in one table.
+- `games`: Stores both the sitemap-derived slug index and crawled game metadata, score summaries, cover URL, and raw product/summary JSON snapshots in one table.
 - `critic_reviews`: Stores critic review records associated with each game slug.
 - `user_reviews`: Stores user review records keyed by review ID and linked back to each game slug.
 - `sync_state`: Stores lightweight key-value checkpoints such as sync progress markers.
