@@ -9,7 +9,15 @@ and this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
-- Telegram bot MVP on top of the local HTTP API, currently supporting search, game details, and critic-review pagination.
+
+## [0.2.4] - 2026-03-19
+
+### Added
+- Telegram bot MVP on top of the local HTTP API, supporting search, game details, and critic-review pagination.
+
+### Changed
+- `gamecritic serve` now starts the Telegram bot when `config/bot_settings.json` contains a valid bot token.
+- The web frontend and API can now be served under the `/gamecritic` base path, with README demo links pointing to the live web UI and Telegram bot.
 
 ## [0.2.3] - 2026-03-18
 
