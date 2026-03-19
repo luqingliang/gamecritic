@@ -2,6 +2,50 @@ const RECENT_GAMES_KEY = "gamecritic_recent_games";
 const LANGUAGE_KEY = "gamecritic_lang";
 const INITIAL_VISIBLE_REVIEWS = 20;
 const REVIEW_INCREMENT = 20;
+const DEFAULT_BASE_PATH = "/gamecritic";
+
+function normalizeBasePath(value) {
+  const normalized = String(value || "").trim().replace(/\/+$/, "");
+  if (!normalized || normalized === "/") {
+    return "";
+  }
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+function inferBasePath(pathname) {
+  const candidate = normalizeBasePath(DEFAULT_BASE_PATH);
+  const normalizedPath = String(pathname || "");
+  if (candidate && (normalizedPath === candidate || normalizedPath.startsWith(`${candidate}/`))) {
+    return candidate;
+  }
+  return "";
+}
+
+const BASE_PATH = normalizeBasePath(
+  typeof window.__GAMECRITIC_BASE_PATH__ === "string"
+    ? window.__GAMECRITIC_BASE_PATH__
+    : inferBasePath(window.location.pathname)
+);
+
+function appPath(path) {
+  const normalizedPath = String(path || "").trim();
+  const suffix = normalizedPath && normalizedPath !== "/"
+    ? (normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`)
+    : "";
+  if (!BASE_PATH) {
+    return suffix || "/";
+  }
+  return `${BASE_PATH}${suffix}`;
+}
+
+function stripBasePath(pathname) {
+  const normalizedPath = String(pathname || "").trim() || "/";
+  if (BASE_PATH && (normalizedPath === BASE_PATH || normalizedPath.startsWith(`${BASE_PATH}/`))) {
+    const stripped = normalizedPath.slice(BASE_PATH.length);
+    return stripped || "/";
+  }
+  return normalizedPath;
+}
 
 const COPY = {
   zh: {
@@ -477,7 +521,7 @@ async function hydrateSearchResults(requestId) {
       continue;
     }
     try {
-      const game = await fetchJson(`/api/game?slug=${encodeURIComponent(slug)}`);
+      const game = await fetchJson(appPath(`/api/game?slug=${encodeURIComponent(slug)}`));
       if (requestId !== state.requestId) {
         return;
       }
@@ -523,11 +567,12 @@ function renderStatus() {
 }
 
 function showSearchRoute() {
-  if (window.location.pathname === "/") {
-    window.history.replaceState({}, "", "/");
+  const searchPath = appPath("/");
+  if (window.location.pathname === searchPath) {
+    window.history.replaceState({}, "", searchPath);
     return;
   }
-  window.history.pushState({}, "", "/");
+  window.history.pushState({}, "", searchPath);
 }
 
 function renderGame() {
@@ -640,7 +685,7 @@ function openGameSlug(slug, replace = false) {
     return;
   }
   elements.input.value = "";
-  const nextPath = `/game/${encodeURIComponent(normalized)}`;
+  const nextPath = appPath(`/game/${encodeURIComponent(normalized)}`);
   if (replace) {
     window.location.replace(nextPath);
     return;
@@ -733,7 +778,7 @@ async function searchGames(query) {
   renderReviews();
 
   try {
-    const searchResult = await fetchJson(`/api/search?q=${encodeURIComponent(normalized)}`);
+    const searchResult = await fetchJson(appPath(`/api/search?q=${encodeURIComponent(normalized)}`));
     if (requestId !== state.requestId) {
       return;
     }
@@ -794,7 +839,7 @@ async function loadSlug(slug) {
   renderReviews();
 
   try {
-    const game = await fetchJson(`/api/game?slug=${encodeURIComponent(normalized)}`);
+    const game = await fetchJson(appPath(`/api/game?slug=${encodeURIComponent(normalized)}`));
     if (requestId !== state.requestId) {
       return;
     }
@@ -805,7 +850,7 @@ async function loadSlug(slug) {
 
     state.reviewsLoading = true;
     renderReviews();
-    const reviews = await fetchJson(`/api/reviews?slug=${encodeURIComponent(normalized)}`);
+    const reviews = await fetchJson(appPath(`/api/reviews?slug=${encodeURIComponent(normalized)}`));
     if (requestId !== state.requestId) {
       return;
     }
@@ -832,7 +877,7 @@ async function loadSlug(slug) {
 
 function applyRoute(slug, replace = false) {
   const normalized = normalizeSlug(slug);
-  const nextPath = normalized ? `/game/${encodeURIComponent(normalized)}` : "/";
+  const nextPath = normalized ? appPath(`/game/${encodeURIComponent(normalized)}`) : appPath("/");
   if (replace) {
     window.history.replaceState({}, "", nextPath);
   } else {
@@ -854,7 +899,7 @@ function applyRoute(slug, replace = false) {
 }
 
 function routeSlugFromPath() {
-  const parts = window.location.pathname.split("/").filter(Boolean);
+  const parts = stripBasePath(window.location.pathname).split("/").filter(Boolean);
   if (parts.length === 2 && parts[0] === "game") {
     return decodeURIComponent(parts[1]);
   }

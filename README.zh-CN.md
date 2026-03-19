@@ -2,6 +2,11 @@
 
 [English](./README.md)
 
+## 体验地址
+
+- [Web 体验地址](http://43.134.29.182/gamecritic)
+- [Telegram Bot 体验地址](https://t.me/gamecritic_bot)
+
 用于抓取 Metacritic 游戏数据的 Python 爬虫，重点能力：
 
 - 从官方游戏 sitemap 发现游戏

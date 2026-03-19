@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Gamecritic</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="__GAMECRITIC_BASE_PATH_VALUE__/static/app.css">
 </head>
 <body>
   <div class="page-shell">
@@ -135,6 +135,7 @@
     </main>
   </div>
 
-  <script src="/static/app.js" defer></script>
+  <script>window.__GAMECRITIC_BASE_PATH__ = "__GAMECRITIC_BASE_PATH_VALUE__";</script>
+  <script src="__GAMECRITIC_BASE_PATH_VALUE__/static/app.js" defer></script>
 </body>
 </html>

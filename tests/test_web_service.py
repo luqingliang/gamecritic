@@ -912,7 +912,7 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertIn('id="slug-form"', text)
         self.assertIn('id="lang-switch"', text)
         self.assertIn('id="status-card"', text)
-        self.assertIn('/static/app.js', text)
+        self.assertIn('src="/static/app.js"', text)
 
     def test_frontend_game_route_returns_html(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -929,6 +929,92 @@ class WebServiceApiTestCase(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(content_type, "text/html; charset=utf-8")
         self.assertIn('id="reviews-title"', body.decode("utf-8"))
+
+    def test_frontend_prefixed_root_route_returns_html(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, content_type, body = service.dispatch_frontend_path("/gamecritic")
+            finally:
+                service.close()
+
+        text = body.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "text/html; charset=utf-8")
+        self.assertIn('src="/gamecritic/static/app.js"', text)
+        self.assertIn('window.__GAMECRITIC_BASE_PATH__ = "/gamecritic"', text)
+
+    def test_prefixed_search_endpoint_returns_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="elden-ring",
+                    product_payload={"data": {"item": {"id": 1, "title": "Elden Ring", "platform": "PC"}}},
+                    critic_summary_payload=None,
+                    user_summary_payload=None,
+                    cover_url=None,
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                status, payload = self._dispatch(service, "/gamecritic/api/search?q=Elden%20Ring")
+            finally:
+                service.close()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["data"]["selected"]["slug"], "elden-ring")
+
+    def test_prefixed_path_style_endpoints_return_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            storage = SQLiteStorage(db_path)
+            try:
+                storage.upsert_game(
+                    slug="elden-ring",
+                    product_payload={"data": {"item": {"id": 1, "title": "Elden Ring", "platform": "PC"}}},
+                    critic_summary_payload={"data": {"item": {"score": 95, "reviewCount": 1}}},
+                    user_summary_payload={"data": {"item": {"score": 8.5, "reviewCount": 0}}},
+                    cover_url=None,
+                )
+                storage.upsert_critic_reviews(
+                    "elden-ring",
+                    [{"publicationName": "IGN", "quote": "Great", "score": 100, "date": "2024-01-01"}],
+                )
+            finally:
+                storage.close()
+
+            service = self._build_service(
+                db_path=db_path,
+                client_factory=lambda: _NeverUsedClient(),
+            )
+            try:
+                search_status, search_payload = self._dispatch(service, "/gamecritic/api/search/Elden%20Ring")
+                game_status, game_payload = self._dispatch(service, "/gamecritic/api/games/elden-ring")
+                reviews_status, reviews_payload = self._dispatch(service, "/gamecritic/api/games/elden-ring/reviews")
+            finally:
+                service.close()
+
+        self.assertEqual(search_status, 200)
+        self.assertTrue(search_payload["ok"])
+        self.assertEqual(search_payload["data"]["selected"]["slug"], "elden-ring")
+        self.assertEqual(game_status, 200)
+        self.assertTrue(game_payload["ok"])
+        self.assertEqual(game_payload["data"]["slug"], "elden-ring")
+        self.assertEqual(reviews_status, 200)
+        self.assertTrue(reviews_payload["ok"])
+        self.assertEqual(reviews_payload["data"]["counts"]["critic_reviews"], 1)
 
     def test_frontend_static_asset_returns_javascript(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
