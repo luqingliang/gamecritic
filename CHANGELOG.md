@@ -10,6 +10,11 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.2.5] - 2026-03-19
+
+### Changed
+- Critic review crawling now fetches all available pages by default, while `max_review_pages` only limits user-review pagination.
+
 ## [0.2.4] - 2026-03-19
 
 ### Added
