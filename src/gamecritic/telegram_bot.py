@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,10 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramApiError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -133,7 +139,7 @@ class TelegramBotTransport:
         try:
             response = self._client.post(f"/{method}", json=payload)
         except (httpx.HTTPError, RuntimeError) as exc:
-            raise TelegramApiError(f"telegram request failed: {exc}") from exc
+            raise TelegramApiError(f"telegram {method} request failed: {exc}") from exc
 
         status_code = int(response.status_code)
         try:
@@ -145,7 +151,11 @@ class TelegramBotTransport:
             raise TelegramApiError("invalid telegram API response")
         if status_code >= 400 or not body.get("ok", False):
             description = str(body.get("description") or f"telegram request failed: {status_code}")
-            raise TelegramApiError(description, status_code=status_code)
+            raise TelegramApiError(
+                description,
+                status_code=status_code,
+                retry_after=_extract_retry_after(body.get("parameters")),
+            )
         return body.get("result")
 
 
@@ -201,6 +211,7 @@ class GamecriticTelegramBot:
 
     def serve_forever(self) -> None:
         offset: int | None = None
+        failure_streak = 0
         while not self._stop_event.is_set():
             try:
                 updates = self._transport.get_updates(offset=offset, timeout=self._config.poll_timeout)
@@ -210,12 +221,19 @@ class GamecriticTelegramBot:
                 if exc.status_code in {400, 401, 403, 404}:
                     logger.warning("telegram bot configuration rejected by Telegram: %s", exc.message)
                     return
-                logger.warning("telegram bot polling failed: %s", exc)
-                if self._stop_event.wait(1.0):
+                failure_streak += 1
+                retry_delay = _poll_retry_delay(exc, failure_streak)
+                logger.warning(
+                    "telegram bot polling failed: %s; retrying in %.1fs (streak=%d)",
+                    exc.message,
+                    retry_delay,
+                    failure_streak,
+                )
+                if self._stop_event.wait(retry_delay):
                     return
-                time.sleep(1.0)
                 continue
 
+            failure_streak = 0
             for update in updates:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
@@ -224,3 +242,32 @@ class GamecriticTelegramBot:
                     self._handler.handle_update(update)
                 except Exception:  # pragma: no cover - defensive guard for long-running loop
                     logger.exception("telegram bot update handling failed update_id=%s", update_id)
+
+
+def _extract_retry_after(parameters: Any) -> float | None:
+    if not isinstance(parameters, dict):
+        return None
+    retry_after = parameters.get("retry_after")
+    if not isinstance(retry_after, (int, float)) or isinstance(retry_after, bool):
+        return None
+    return max(0.0, float(retry_after))
+
+
+def _poll_retry_delay(exc: TelegramApiError, failure_streak: int) -> float:
+    if exc.retry_after is not None:
+        return max(1.0, exc.retry_after)
+
+    bounded_streak = max(1, int(failure_streak))
+    if exc.status_code == 409:
+        return 10.0
+    if exc.status_code == 429:
+        return min(60.0, float(5 * bounded_streak))
+    if exc.status_code is not None and exc.status_code >= 500:
+        return min(30.0, float(2 ** min(bounded_streak, 4)))
+
+    message = str(exc.message).lower()
+    if "timed out" in message or "timeout" in message:
+        return min(30.0, float(2 ** min(bounded_streak, 4)))
+    if "server disconnected" in message:
+        return min(15.0, float(2 ** min(bounded_streak, 3)))
+    return min(10.0, float(1 + bounded_streak))

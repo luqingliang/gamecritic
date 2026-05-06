@@ -19,7 +19,7 @@ from gamecritic.cli import (
     run_telegram_bot,
     run_serve,
 )
-from gamecritic.telegram_bot import GamecriticTelegramBot, TelegramApiError, TelegramBotConfig
+from gamecritic.telegram_bot import GamecriticTelegramBot, TelegramApiError, TelegramBotConfig, TelegramBotTransport, _poll_retry_delay
 
 
 class _FakeBackendClient:
@@ -84,6 +84,23 @@ class _FakeTransport:
 
     def close(self) -> None:
         return None
+
+
+class _RecordingStopEvent:
+    def __init__(self) -> None:
+        self.wait_calls: list[float] = []
+        self._is_set = False
+
+    def is_set(self) -> bool:
+        return self._is_set
+
+    def set(self) -> None:
+        self._is_set = True
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.wait_calls.append(0.0 if timeout is None else float(timeout))
+        self._is_set = True
+        return True
 
 
 class TelegramBotCliTestCase(unittest.TestCase):
@@ -200,6 +217,62 @@ class TelegramBotCliTestCase(unittest.TestCase):
         config = bot_mock.call_args.kwargs["config"]
         self.assertEqual(config.bot_token, "demo-bot-token")
         self.assertEqual(config.backend_base_url, "http://127.0.0.1:9100")
+
+
+class TelegramBotTransportTestCase(unittest.TestCase):
+    def test_transport_exposes_retry_after_from_telegram_response(self) -> None:
+        class _FakeResponse:
+            status_code = 429
+
+            def json(self) -> dict:
+                return {
+                    "ok": False,
+                    "error_code": 429,
+                    "description": "Too Many Requests: retry after 5",
+                    "parameters": {"retry_after": 5},
+                }
+
+        class _FakeClient:
+            def post(self, path: str, json: dict) -> _FakeResponse:
+                self.path = path
+                self.payload = dict(json)
+                return _FakeResponse()
+
+            def close(self) -> None:
+                return None
+
+        fake_client = _FakeClient()
+        with patch("gamecritic.telegram_bot.httpx.Client", return_value=fake_client):
+            transport = TelegramBotTransport(
+                api_base_url="https://api.telegram.org",
+                bot_token="demo-bot-token",
+                request_timeout=5.0,
+            )
+
+        with self.assertRaises(TelegramApiError) as exc:
+            transport.get_updates(offset=10, timeout=30)
+
+        self.assertEqual(exc.exception.status_code, 429)
+        self.assertEqual(exc.exception.retry_after, 5.0)
+        self.assertEqual(fake_client.path, "/getUpdates")
+        self.assertEqual(fake_client.payload, {"timeout": 30, "offset": 10})
+
+    def test_poll_retry_delay_prefers_retry_after(self) -> None:
+        delay = _poll_retry_delay(
+            TelegramApiError("Too Many Requests: retry after 5", status_code=429, retry_after=5.0),
+            failure_streak=3,
+        )
+        self.assertEqual(delay, 5.0)
+
+    def test_poll_retry_delay_backs_off_for_transient_errors(self) -> None:
+        gateway_delay = _poll_retry_delay(TelegramApiError("Bad Gateway", status_code=502), failure_streak=1)
+        timeout_delay = _poll_retry_delay(
+            TelegramApiError("telegram getUpdates request failed: The read operation timed out"),
+            failure_streak=3,
+        )
+
+        self.assertEqual(gateway_delay, 2.0)
+        self.assertEqual(timeout_delay, 8.0)
 
 
 class TelegramCallbackTestCase(unittest.TestCase):
@@ -460,6 +533,50 @@ class TelegramBotHandlerTestCase(unittest.TestCase):
 
 
 class TelegramBotLifecycleTestCase(unittest.TestCase):
+    def test_rate_limited_polling_waits_for_retry_after(self) -> None:
+        stop_event = _RecordingStopEvent()
+
+        class _RateLimitedTransport:
+            def get_updates(self, *, offset, timeout):
+                raise TelegramApiError("Too Many Requests: retry after 5", status_code=429, retry_after=5.0)
+
+            def close(self) -> None:
+                return None
+
+            def send_message(self, *, chat_id: int, text: str, buttons=()):
+                return {"chat_id": chat_id, "text": text, "buttons": buttons}
+
+            def send_photo(self, *, chat_id: int, photo_url: str, caption: str, buttons=()):
+                return {"chat_id": chat_id, "photo_url": photo_url, "caption": caption, "buttons": buttons}
+
+            def edit_message_text(self, *, chat_id: int, message_id: int, text: str, buttons=()):
+                return {"chat_id": chat_id, "message_id": message_id, "text": text, "buttons": buttons}
+
+            def answer_callback_query(self, *, callback_query_id: str):
+                return {"ok": True}
+
+        config = TelegramBotConfig(
+            bot_token="demo-bot-token",
+            backend_base_url="http://127.0.0.1:8000",
+            telegram_api_base_url="https://api.telegram.org",
+            request_timeout=1.0,
+            poll_timeout=30,
+            critic_reviews_per_page=5,
+            search_result_limit=8,
+        )
+        bot = GamecriticTelegramBot(
+            config=config,
+            stop_event=stop_event,
+            backend_client=_FakeBackendClient(),
+            transport=_RateLimitedTransport(),
+        )
+
+        with self.assertLogs("gamecritic.telegram_bot", level="WARNING") as captured_logs:
+            bot.serve_forever()
+
+        self.assertEqual(stop_event.wait_calls, [5.0])
+        self.assertTrue(any("retrying in 5.0s" in line for line in captured_logs.output))
+
     def test_close_unblocks_long_polling(self) -> None:
         poll_started = threading.Event()
         close_called = threading.Event()

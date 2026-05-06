@@ -10,6 +10,12 @@ and this project follows [Semantic Versioning](https://semver.org/).
 ### Added
 - Planned: multi-domain crawling support (Movies / TV Shows / Music).
 
+## [0.2.6] - 2026-05-06
+
+### Fixed
+- Telegram bot polling now honors Telegram `retry_after` hints for rate limits instead of immediately retrying.
+- Telegram polling failures now use bounded backoff for transient upstream errors and timeouts, reducing repeated warning bursts when Telegram or the network path is unstable.
+
 ## [0.2.5] - 2026-03-19
 
 ### Changed
@@ -206,7 +212,9 @@ and this project follows [Semantic Versioning](https://semver.org/).
 - SQLite-based storage for crawled game data.
 - Core CLI commands for crawling and basic data operations.
 
-[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/luqingliang/gamecritic/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/luqingliang/gamecritic/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/luqingliang/gamecritic/compare/v0.2.4...v0.2.5
 [0.2.1]: https://github.com/luqingliang/gamecritic/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/luqingliang/gamecritic/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/luqingliang/gamecritic/compare/v0.1.8...v0.1.9
