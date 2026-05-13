@@ -5,7 +5,6 @@
 ## Live Demos
 
 - [Web Demo](http://43.134.29.182/gamecritic)
-- [Telegram Bot Demo](https://t.me/gamecritic_bot)
 
 Python crawler for Metacritic game data, focused on:
 
